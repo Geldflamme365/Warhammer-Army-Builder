@@ -1,10 +1,12 @@
 import {
+  ArrowLeft,
   Check,
   ChevronRight,
   Copy,
   Crosshair,
   Database,
   Download,
+  FolderPlus,
   LoaderCircle,
   Minus,
   Plus,
@@ -24,6 +26,7 @@ import type {
   Modifier,
   Profile,
   RosterItem,
+  StoredArmy,
   StoredState,
   TreeNode,
   UnitRecord,
@@ -48,6 +51,7 @@ const CATEGORY_ORDER = [
 ] as const;
 
 type Alliance = (typeof ALLIANCE_ORDER)[number];
+type AppView = "home" | "setup" | "builder";
 
 function App() {
   const [indexData, setIndexData] = useState<CatalogueIndex | null>(null);
@@ -58,8 +62,12 @@ function App() {
   const [factionLoading, setFactionLoading] = useState(false);
   const [factionError, setFactionError] = useState<string>("");
 
-  const [selectedAlliance, setSelectedAlliance] = useState<Alliance>("Xenos");
-  const [selectedFactionSlug, setSelectedFactionSlug] = useState<string>("");
+  const [view, setView] = useState<AppView>("home");
+  const [setupAlliance, setSetupAlliance] = useState<Alliance>("Xenos");
+  const [setupFactionSlug, setSetupFactionSlug] = useState<string>("");
+  const [setupArmyName, setSetupArmyName] = useState("");
+  const [armies, setArmies] = useState<StoredArmy[]>([]);
+  const [activeArmyId, setActiveArmyId] = useState<string | null>(null);
   const [datasheetUnitId, setDatasheetUnitId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const deferredSearch = useDeferredValue(searchTerm);
@@ -67,12 +75,8 @@ function App() {
     "overview",
   );
   const [copiedState, setCopiedState] = useState(false);
-  const [openSectionByFaction, setOpenSectionByFaction] = useState<Record<string, string | null>>({});
-
-  const [draftsByFaction, setDraftsByFaction] = useState<Record<string, { updatedAt: string; items: RosterItem[] }>>(
-    {},
-  );
-  const [selectedUnitIdByFaction, setSelectedUnitIdByFaction] = useState<Record<string, string>>({});
+  const [openSectionByArmy, setOpenSectionByArmy] = useState<Record<string, string | null>>({});
+  const [selectedUnitIdByArmy, setSelectedUnitIdByArmy] = useState<Record<string, string>>({});
 
   useEffect(() => {
     try {
@@ -81,15 +85,10 @@ function App() {
         return;
       }
       const parsed = JSON.parse(raw) as StoredState;
-      if (parsed.selectedFactionSlug) {
-        setSelectedFactionSlug(parsed.selectedFactionSlug);
-      }
-      if (parsed.draftsByFaction) {
-        setDraftsByFaction(parsed.draftsByFaction);
-      }
-      if (parsed.selectedUnitIdByFaction) {
-        setSelectedUnitIdByFaction(parsed.selectedUnitIdByFaction);
-      }
+      const migrated = migrateStoredState(parsed);
+      setArmies(migrated.armies);
+      setActiveArmyId(migrated.activeArmyId);
+      setSelectedUnitIdByArmy(migrated.selectedUnitIdByArmy);
     } catch {
       window.localStorage.removeItem(STORAGE_KEY);
     }
@@ -102,16 +101,6 @@ function App() {
       .then((data) => {
         setIndexData(data);
         setIndexError("");
-        const preferredFaction =
-          (selectedFactionSlug && data.factions.find((faction) => faction.slug === selectedFactionSlug)) ??
-          data.factions[17] ??
-          data.factions[0];
-
-        if (preferredFaction) {
-          const alliance = getFactionAlliance(preferredFaction.name);
-          setSelectedFactionSlug(preferredFaction.slug);
-          setSelectedAlliance(alliance);
-        }
       })
       .catch((error) => {
         if (controller.signal.aborted) {
@@ -125,9 +114,8 @@ function App() {
         }
       });
     return () => controller.abort();
-  }, [selectedFactionSlug]);
+  }, []);
 
-  const selectedFactionMeta = indexData?.factions.find((faction) => faction.slug === selectedFactionSlug) ?? null;
   const factionsByAlliance = useMemo(() => {
     const grouped: Record<Alliance, FactionMeta[]> = {
       Xenos: [],
@@ -146,19 +134,41 @@ function App() {
 
     return grouped;
   }, [indexData]);
-  const visibleFactions = factionsByAlliance[selectedAlliance];
+  const visibleFactions = factionsByAlliance[setupAlliance];
+  const armiesByUpdatedAt = useMemo(
+    () => armies.slice().sort((left, right) => Date.parse(right.updatedAt) - Date.parse(left.updatedAt)),
+    [armies],
+  );
+  const activeArmy = activeArmyId ? armies.find((army) => army.id === activeArmyId) ?? null : null;
+  const selectedFactionMeta = activeArmy
+    ? indexData?.factions.find((faction) => faction.slug === activeArmy.factionSlug) ?? null
+    : null;
+  const setupFactionMeta = setupFactionSlug
+    ? indexData?.factions.find((faction) => faction.slug === setupFactionSlug) ?? null
+    : null;
+  const screen = view === "builder" && !activeArmy ? "home" : view;
+  const catalogueTargetMeta = screen === "setup" ? setupFactionMeta : selectedFactionMeta;
 
   useEffect(() => {
-    if (!selectedFactionMeta || loadedFactions[selectedFactionMeta.slug]) {
+    if (!indexData || !visibleFactions.length) {
+      return;
+    }
+    if (!visibleFactions.some((faction) => faction.slug === setupFactionSlug)) {
+      setSetupFactionSlug(visibleFactions[0].slug);
+    }
+  }, [indexData, setupFactionSlug, visibleFactions]);
+
+  useEffect(() => {
+    if (!catalogueTargetMeta || loadedFactions[catalogueTargetMeta.slug]) {
       return;
     }
     const controller = new AbortController();
     setFactionLoading(true);
-    loadFactionCatalogue(selectedFactionMeta, controller.signal)
+    loadFactionCatalogue(catalogueTargetMeta, controller.signal)
       .then((data) => {
         setLoadedFactions((current) => ({
           ...current,
-          [selectedFactionMeta.slug]: data,
+          [catalogueTargetMeta.slug]: data,
         }));
         setFactionError("");
       })
@@ -174,35 +184,23 @@ function App() {
         }
       });
     return () => controller.abort();
-  }, [loadedFactions, selectedFactionMeta]);
+  }, [catalogueTargetMeta, loadedFactions]);
 
   useEffect(() => {
-    if (!selectedFactionMeta) {
+    if (screen !== "builder" || activeArmy) {
       return;
     }
-    const alliance = getFactionAlliance(selectedFactionMeta.name);
-    if (selectedAlliance !== alliance) {
-      setSelectedAlliance(alliance);
-    }
-  }, [selectedAlliance, selectedFactionMeta]);
-
-  useEffect(() => {
-    if (!visibleFactions.length) {
-      return;
-    }
-    if (!visibleFactions.some((faction) => faction.slug === selectedFactionSlug)) {
-      setSelectedFactionSlug(visibleFactions[0].slug);
-    }
-  }, [selectedFactionSlug, visibleFactions]);
+    setView("home");
+  }, [activeArmy, screen]);
 
   useEffect(() => {
     const payload: StoredState = {
-      selectedFactionSlug,
-      selectedUnitIdByFaction,
-      draftsByFaction,
+      armies,
+      activeArmyId,
+      selectedUnitIdByArmy,
     };
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-  }, [draftsByFaction, selectedFactionSlug, selectedUnitIdByFaction]);
+  }, [activeArmyId, armies, selectedUnitIdByArmy]);
 
   const activeFaction = selectedFactionMeta ? loadedFactions[selectedFactionMeta.slug] : undefined;
   const units = activeFaction?.units ?? [];
@@ -245,42 +243,46 @@ function App() {
       .sort((left, right) => compareCategoryTitle(left.title, right.title));
   }, [filteredUnits]);
 
-  const selectedUnitId = selectedFactionSlug ? selectedUnitIdByFaction[selectedFactionSlug] : undefined;
+  const selectedUnitId = activeArmyId ? selectedUnitIdByArmy[activeArmyId] : undefined;
 
   useEffect(() => {
-    if (!selectedFactionSlug || filteredUnits.length === 0) {
+    if (screen !== "builder" || !activeArmyId || filteredUnits.length === 0) {
       return;
     }
-    const currentId = selectedUnitIdByFaction[selectedFactionSlug];
+    const currentId = selectedUnitIdByArmy[activeArmyId];
     const stillExists = filteredUnits.some((unit) => unit.id === currentId);
     if (!currentId || !stillExists) {
-      setSelectedUnitIdByFaction((current) => ({
+      setSelectedUnitIdByArmy((current) => ({
         ...current,
-        [selectedFactionSlug]: filteredUnits[0].id,
+        [activeArmyId]: filteredUnits[0].id,
       }));
     }
-  }, [filteredUnits, selectedFactionSlug, selectedUnitIdByFaction]);
+  }, [activeArmyId, filteredUnits, screen, selectedUnitIdByArmy]);
 
   const selectedUnit =
-    filteredUnits.find((unit) => unit.id === selectedUnitId) ??
-    units.find((unit) => unit.id === selectedUnitId) ??
-    filteredUnits[0] ??
-    units[0] ??
-    null;
-  const datasheetUnit = datasheetUnitId ? units.find((unit) => unit.id === datasheetUnitId) ?? null : null;
+    screen === "builder"
+      ? filteredUnits.find((unit) => unit.id === selectedUnitId) ??
+        units.find((unit) => unit.id === selectedUnitId) ??
+        filteredUnits[0] ??
+        units[0] ??
+        null
+      : null;
+  const datasheetUnit =
+    screen === "builder" && datasheetUnitId ? units.find((unit) => unit.id === datasheetUnitId) ?? null : null;
 
   useEffect(() => {
-    if (!selectedFactionSlug || !unitSections.length) {
+    if (screen !== "builder" || !activeArmyId || !unitSections.length) {
       return;
     }
     const selectedSectionTitle =
-      selectedUnit?.summary.primaryCategory && unitSections.some((section) => section.title === selectedUnit.summary.primaryCategory)
+      selectedUnit?.summary.primaryCategory &&
+      unitSections.some((section) => section.title === selectedUnit.summary.primaryCategory)
         ? selectedUnit.summary.primaryCategory
         : null;
     const defaultSection = selectedSectionTitle ?? unitSections[0]?.title ?? null;
 
-    setOpenSectionByFaction((current) => {
-      const currentOpenSection = current[selectedFactionSlug];
+    setOpenSectionByArmy((current) => {
+      const currentOpenSection = current[activeArmyId];
       const openSectionStillExists =
         currentOpenSection !== undefined && unitSections.some((section) => section.title === currentOpenSection);
       const shouldFollowSelection = deferredSearch.trim().length > 0;
@@ -293,12 +295,12 @@ function App() {
 
       return {
         ...current,
-        [selectedFactionSlug]: nextOpenSection,
+        [activeArmyId]: nextOpenSection,
       };
     });
-  }, [deferredSearch, selectedFactionSlug, selectedUnit, unitSections]);
+  }, [activeArmyId, deferredSearch, screen, selectedUnit, unitSections]);
 
-  const currentDraft = draftsByFaction[selectedFactionSlug]?.items ?? [];
+  const currentDraft = activeArmy?.items ?? [];
   const totalPoints = currentDraft.reduce((sum, item) => sum + item.points * item.count, 0);
   const totalSelections = currentDraft.reduce((sum, item) => sum + item.count, 0);
   const armySections = useMemo(() => {
@@ -314,10 +316,10 @@ function App() {
   }, [currentDraft]);
 
   useEffect(() => {
-    if (datasheetUnitId && !units.some((unit) => unit.id === datasheetUnitId)) {
+    if (screen !== "builder" || (datasheetUnitId && !units.some((unit) => unit.id === datasheetUnitId))) {
       setDatasheetUnitId(null);
     }
-  }, [datasheetUnitId, units]);
+  }, [datasheetUnitId, screen, units]);
 
   useEffect(() => {
     if (!datasheetUnit) {
@@ -339,59 +341,140 @@ function App() {
     };
   }, [datasheetUnit]);
 
-  function updateDraft(updater: (items: RosterItem[]) => RosterItem[]) {
-    if (!selectedFactionSlug) {
+  function updateArmyItems(updater: (items: RosterItem[]) => RosterItem[]) {
+    if (!activeArmyId) {
       return;
     }
-    setDraftsByFaction((current) => {
-      const items = current[selectedFactionSlug]?.items ?? [];
-      return {
-        ...current,
-        [selectedFactionSlug]: {
-          updatedAt: new Date().toISOString(),
-          items: updater(items),
-        },
-      };
+    setArmies((current) =>
+      current.map((army) =>
+        army.id === activeArmyId
+          ? {
+              ...army,
+              updatedAt: new Date().toISOString(),
+              items: updater(army.items),
+            }
+          : army,
+      ),
+    );
+  }
+
+  function beginNewArmy() {
+    setView("setup");
+    setSetupArmyName("");
+    setDatasheetUnitId(null);
+    setSearchTerm("");
+    setDetailTab("overview");
+  }
+
+  function openArmy(armyId: string) {
+    setActiveArmyId(armyId);
+    setView("builder");
+    setCopiedState(false);
+    setDatasheetUnitId(null);
+    setSearchTerm("");
+    setDetailTab("overview");
+  }
+
+  function returnHome() {
+    setView("home");
+    setCopiedState(false);
+    setDatasheetUnitId(null);
+    setSearchTerm("");
+    setDetailTab("overview");
+  }
+
+  function deleteArmy(armyId: string) {
+    const targetArmy = armies.find((army) => army.id === armyId);
+    if (!targetArmy) {
+      return;
+    }
+
+    const confirmed = window.confirm(`Delete "${targetArmy.name}"? This cannot be undone.`);
+    if (!confirmed) {
+      return;
+    }
+
+    setArmies((current) => current.filter((army) => army.id !== armyId));
+    setSelectedUnitIdByArmy((current) => {
+      const next = { ...current };
+      delete next[armyId];
+      return next;
     });
+    setOpenSectionByArmy((current) => {
+      const next = { ...current };
+      delete next[armyId];
+      return next;
+    });
+
+    if (activeArmyId === armyId) {
+      setActiveArmyId(null);
+      setView("home");
+      setCopiedState(false);
+      setDatasheetUnitId(null);
+      setSearchTerm("");
+      setDetailTab("overview");
+    }
   }
 
   function selectAlliance(alliance: Alliance) {
     startTransition(() => {
-      setSelectedAlliance(alliance);
+      setSetupAlliance(alliance);
 
       const availableFactions = factionsByAlliance[alliance];
-      const keepCurrentFaction = availableFactions.some((faction) => faction.slug === selectedFactionSlug);
-      const nextFactionSlug = keepCurrentFaction ? selectedFactionSlug : availableFactions[0]?.slug ?? "";
+      const keepCurrentFaction = availableFactions.some((faction) => faction.slug === setupFactionSlug);
+      const nextFactionSlug = keepCurrentFaction ? setupFactionSlug : availableFactions[0]?.slug ?? "";
 
-      setSelectedFactionSlug(nextFactionSlug);
-      setSearchTerm("");
-      setDetailTab("overview");
+      setSetupFactionSlug(nextFactionSlug);
     });
   }
 
   function selectFaction(slug: string) {
     const factionMeta = indexData?.factions.find((faction) => faction.slug === slug);
     startTransition(() => {
-      setSelectedFactionSlug(slug);
+      setSetupFactionSlug(slug);
       if (factionMeta) {
-        setSelectedAlliance(getFactionAlliance(factionMeta.name));
+        setSetupAlliance(getFactionAlliance(factionMeta.name));
       }
-      setSearchTerm("");
-      setDetailTab("overview");
     });
   }
 
   function toggleSection(sectionTitle: string) {
-    if (!selectedFactionSlug) {
+    if (!activeArmyId) {
       return;
     }
-    setOpenSectionByFaction((current) => {
-      const currentOpenSection = current[selectedFactionSlug] ?? null;
+    setOpenSectionByArmy((current) => {
+      const currentOpenSection = current[activeArmyId] ?? null;
       return {
         ...current,
-        [selectedFactionSlug]: currentOpenSection === sectionTitle ? null : sectionTitle,
+        [activeArmyId]: currentOpenSection === sectionTitle ? null : sectionTitle,
       };
     });
+  }
+
+  function createArmy() {
+    if (!setupFactionMeta) {
+      return;
+    }
+    const now = new Date().toISOString();
+    const armyId = createArmyId();
+    const name = setupArmyName.trim() || buildArmyName(setupFactionMeta, armies);
+    const army: StoredArmy = {
+      id: armyId,
+      name,
+      factionSlug: setupFactionMeta.slug,
+      createdAt: now,
+      updatedAt: now,
+      items: [],
+    };
+
+    setArmies((current) => [army, ...current]);
+    setActiveArmyId(armyId);
+    setView("builder");
+    setCopiedState(false);
+    setDatasheetUnitId(null);
+    setSearchTerm("");
+    setDetailTab("overview");
+    setSetupArmyName("");
   }
 
   function openDatasheet(unit: UnitRecord) {
@@ -404,33 +487,34 @@ function App() {
   }
 
   function selectUnit(unitId: string) {
-    if (!selectedFactionSlug) {
+    if (!activeArmyId) {
       return;
     }
-    setSelectedUnitIdByFaction((current) => ({
+    setSelectedUnitIdByArmy((current) => ({
       ...current,
-      [selectedFactionSlug]: unitId,
+      [activeArmyId]: unitId,
     }));
   }
 
   function focusArmyUnit(unitId: string) {
     const targetUnit = units.find((unit) => unit.id === unitId);
-    if (!selectedFactionSlug || !targetUnit) {
+    if (!activeArmyId || !targetUnit) {
       return;
     }
 
     setSearchTerm("");
     selectUnit(unitId);
     setDetailTab("overview");
-    setOpenSectionByFaction((current) => ({
+    setDatasheetUnitId(unitId);
+    setOpenSectionByArmy((current) => ({
       ...current,
-      [selectedFactionSlug]: targetUnit.summary.primaryCategory ?? "Other",
+      [activeArmyId]: targetUnit.summary.primaryCategory ?? "Other",
     }));
   }
 
   function addUnitToRoster(unit: UnitRecord) {
     const points = typeof unit.summary.points === "number" ? unit.summary.points : 0;
-    updateDraft((items) => {
+    updateArmyItems((items) => {
       const existing = items.find((item) => item.unitId === unit.id);
       if (existing) {
         return items.map((item) =>
@@ -458,7 +542,7 @@ function App() {
   }
 
   function adjustItemCount(unitId: string, nextCount: number) {
-    updateDraft((items) =>
+    updateArmyItems((items) =>
       items
         .map((item) => (item.unitId === unitId ? { ...item, count: nextCount } : item))
         .filter((item) => item.count > 0),
@@ -466,19 +550,20 @@ function App() {
   }
 
   function updateItemNote(unitId: string, note: string) {
-    updateDraft((items) => items.map((item) => (item.unitId === unitId ? { ...item, note } : item)));
+    updateArmyItems((items) => items.map((item) => (item.unitId === unitId ? { ...item, note } : item)));
   }
 
-  function clearFactionRoster() {
-    updateDraft(() => []);
+  function clearArmyRoster() {
+    updateArmyItems(() => []);
   }
 
   async function copyRoster() {
-    if (!selectedFactionMeta || currentDraft.length === 0) {
+    if (!activeArmy || currentDraft.length === 0) {
       return;
     }
     const lines = [
-      selectedFactionMeta.name,
+      activeArmy.name,
+      selectedFactionMeta?.name ?? formatSlugLabel(activeArmy.factionSlug),
       `${totalPoints} pts | ${totalSelections} selections`,
       "",
       ...currentDraft.map((item) => {
@@ -492,13 +577,17 @@ function App() {
   }
 
   function exportRosterJson() {
-    if (!selectedFactionMeta) {
+    if (!activeArmy) {
       return;
     }
     const payload = {
-      faction: {
-        slug: selectedFactionMeta.slug,
-        name: selectedFactionMeta.name,
+      army: {
+        id: activeArmy.id,
+        name: activeArmy.name,
+        factionSlug: activeArmy.factionSlug,
+        factionName: selectedFactionMeta?.name ?? formatSlugLabel(activeArmy.factionSlug),
+        createdAt: activeArmy.createdAt,
+        updatedAt: activeArmy.updatedAt,
       },
       points: totalPoints,
       selections: currentDraft,
@@ -507,7 +596,7 @@ function App() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `${selectedFactionMeta.slug}-roster.json`;
+    anchor.download = `${slugify(activeArmy.name) || activeArmy.factionSlug}-roster.json`;
     anchor.click();
     URL.revokeObjectURL(url);
   }
@@ -534,366 +623,522 @@ function App() {
         </div>
       </header>
 
-      <main className="workspace">
-        <section className="workspace-pane navigator-pane">
-          <div className="pane-head">
-            <h2>Command</h2>
-            <span>{indexData?.factions.length ?? 0} factions</span>
-          </div>
-
-          {indexLoading ? <Loader label="Loading catalogue index" /> : null}
-          {indexError ? <MessageTone tone="error" message={indexError} /> : null}
-
-          <label className="field">
-            <span>Alliance</span>
-            <select
-              value={selectedAlliance}
-              onChange={(event) => selectAlliance(event.target.value as Alliance)}
-              disabled={!indexData}
-            >
-              {ALLIANCE_ORDER.map((alliance) => (
-                <option key={alliance} value={alliance}>
-                  {alliance}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="field">
-            <span>Faction</span>
-            <select
-              value={selectedFactionSlug}
-              onChange={(event) => selectFaction(event.target.value)}
-              disabled={!visibleFactions.length}
-            >
-              {visibleFactions.map((faction) => (
-                <option key={faction.slug} value={faction.slug}>
-                  {getFactionLabel(faction)}
-                </option>
-              ))}
-            </select>
-          </label>
-
-          <label className="field">
-            <span>Search</span>
-            <div className="search-shell">
-              <Search size={16} />
-              <input
-                value={searchTerm}
-                onChange={(event) => setSearchTerm(event.target.value)}
-                placeholder="Units, weapons, rules"
-              />
-            </div>
-          </label>
-
-          {selectedFactionMeta ? (
-            <div className="meta-block">
-              <div>
-                <span>Catalogue</span>
-                <strong>{selectedFactionMeta.sourceFile}</strong>
-              </div>
-              <div>
-                <span>Revision</span>
-                <strong>{selectedFactionMeta.revision}</strong>
-              </div>
-              <div>
-                <span>Indexed units</span>
-                <strong>{selectedFactionMeta.unitCount}</strong>
-              </div>
-            </div>
-          ) : null}
-        </section>
-
-        <section className="workspace-pane library-pane">
-          <div className="pane-head">
-            <h2>Unit Library</h2>
-            <span>{filteredUnits.length} units</span>
-          </div>
-
-          {factionLoading ? <Loader label="Loading faction dossier" /> : null}
-          {factionError ? <MessageTone tone="error" message={factionError} /> : null}
-
-          <div className="library-grid">
-            <div className="unit-list">
-              {unitSections.map((section) => {
-                const isExpanded = openSectionByFaction[selectedFactionSlug] === section.title;
-
-                return (
-                  <section key={section.title} className="unit-section">
-                    <button
-                      className={isExpanded ? "unit-section-toggle expanded" : "unit-section-toggle"}
-                      type="button"
-                      onClick={() => toggleSection(section.title)}
-                      aria-expanded={isExpanded}
-                    >
-                      <span className="unit-section-label">
-                        <ChevronRight size={16} />
-                        <strong>{section.title}</strong>
-                      </span>
-                      <span className="unit-section-count">{section.units.length}</span>
-                    </button>
-
-                    {isExpanded ? (
-                      <div className="unit-section-items">
-                        {section.units.map((unit) => {
-                          const inRoster = currentDraft.find((item) => item.unitId === unit.id)?.count ?? 0;
-                          return (
-                            <article
-                              key={unit.id}
-                              className={selectedUnit?.id === unit.id ? "unit-card selected" : "unit-card"}
-                              onClick={() => openDatasheet(unit)}
-                            >
-                              <div className="unit-card-main">
-                                <div>
-                                  <h3>{unit.name}</h3>
-                                  <p>{unit.selectionType}</p>
-                                </div>
-                                <strong>{formatPoints(unit.summary.points)}</strong>
-                              </div>
-
-                              <div className="unit-card-foot">
-                                <span>{unit.summary.weapons.length} weapons</span>
-                                <span>{unit.summary.abilities.length} abilities</span>
-                                <button
-                                  className="icon-button accent"
-                                  type="button"
-                                  title={`Add ${unit.name}`}
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    addUnitToRoster(unit);
-                                  }}
-                                >
-                                  <Plus size={16} />
-                                </button>
-                              </div>
-
-                              {inRoster > 0 ? <span className="roster-count">{inRoster} in roster</span> : null}
-                            </article>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </section>
-                );
-              })}
-
-              {!factionLoading && unitSections.length === 0 ? (
-                <MessageTone tone="neutral" message="No units match the current filter set." />
-              ) : null}
+      {screen === "home" ? (
+        <main className="screen-grid">
+          <section className="workspace-pane home-pane">
+            <div className="pane-head">
+              <h2>Your Armies</h2>
+              <button className="primary-button" type="button" onClick={beginNewArmy} disabled={indexLoading || !!indexError}>
+                <FolderPlus size={16} />
+                New Army
+              </button>
             </div>
 
-            <div className="detail-pane">
-              {selectedUnit ? (
-                <>
-                  <div className="detail-hero">
-                    <div>
-                      <p className="eyebrow">{selectedUnit.summary.primaryCategory ?? selectedUnit.selectionType}</p>
-                      <h2>{selectedUnit.name}</h2>
-                      <div className="detail-tags">
-                        {selectedUnit.summary.categories.map((category) => (
-                          <span key={category}>{category}</span>
-                        ))}
-                      </div>
-                    </div>
+            {indexLoading ? <Loader label="Loading faction index" /> : null}
+            {indexError ? <MessageTone tone="error" message={indexError} /> : null}
 
-                    <div className="detail-actions">
-                      <strong>{formatPoints(selectedUnit.summary.points)}</strong>
-                      <div className="detail-action-row">
-                        <button className="secondary-button" type="button" onClick={() => openDatasheet(selectedUnit)}>
-                          <Database size={16} />
-                          Datasheet
-                        </button>
-                        <button className="primary-button" type="button" onClick={() => addUnitToRoster(selectedUnit)}>
-                          <Plus size={16} />
-                          Add to roster
-                        </button>
-                      </div>
-                    </div>
-                  </div>
+            {armiesByUpdatedAt.length > 0 ? (
+              <div className="army-home-grid">
+                {armiesByUpdatedAt.map((army) => {
+                  const factionMeta = indexData?.factions.find((faction) => faction.slug === army.factionSlug) ?? null;
+                  const armyPoints = army.items.reduce((sum, item) => sum + item.points * item.count, 0);
+                  const armySelections = army.items.reduce((sum, item) => sum + item.count, 0);
+                  const sectionCount = new Set(army.items.map((item) => item.primaryCategory ?? "Other")).size;
 
-                  <div className="tab-row" role="tablist" aria-label="Unit detail sections">
-                    {[
-                      ["overview", "Overview"],
-                      ["weapons", "Weapons"],
-                      ["abilities", "Abilities"],
-                      ["options", "Options"],
-                      ["tree", "Tree"],
-                    ].map(([value, label]) => (
-                      <button
-                        key={value}
-                        className={detailTab === value ? "tab-button active" : "tab-button"}
-                        onClick={() =>
-                          setDetailTab(value as "overview" | "weapons" | "abilities" | "options" | "tree")
-                        }
-                        type="button"
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
-
-                  <div className="detail-content">
-                    {detailTab === "overview" ? (
-                      <OverviewSection unit={selectedUnit} />
-                    ) : null}
-                    {detailTab === "weapons" ? <WeaponsSection unit={selectedUnit} /> : null}
-                    {detailTab === "abilities" ? <AbilitiesSection unit={selectedUnit} /> : null}
-                    {detailTab === "options" ? <OptionsSection options={selectedUnit.options} /> : null}
-                    {detailTab === "tree" ? <TreeSection tree={selectedUnit.tree} /> : null}
-                  </div>
-                </>
-              ) : (
-                <MessageTone tone="neutral" message="Pick a faction and select a unit to inspect its data." />
-              )}
-            </div>
-          </div>
-        </section>
-
-        <section className="workspace-pane roster-pane">
-          <div className="pane-head">
-            <h2>Army</h2>
-            <span>{totalPoints} pts</span>
-          </div>
-
-          <div className="army-sheet">
-            <div className="army-sheet-header">
-              <div className="army-sheet-title">
-                <p className="eyebrow">Current Army</p>
-                <h3>{selectedFactionMeta ? getFactionLabel(selectedFactionMeta) : "No faction selected"}</h3>
-                <p className="army-sheet-subtitle">{selectedFactionMeta?.name ?? "Pick a faction to start a list."}</p>
-              </div>
-
-              <div className="roster-summary">
-                <div>
-                  <span>Total points</span>
-                  <strong>{totalPoints}</strong>
-                </div>
-                <div>
-                  <span>Selections</span>
-                  <strong>{totalSelections}</strong>
-                </div>
-                <div>
-                  <span>Sections</span>
-                  <strong>{armySections.length}</strong>
-                </div>
-              </div>
-            </div>
-
-            {armySections.length > 0 ? (
-              <div className="army-section-strip">
-                {armySections.map((section) => (
-                  <div key={section.title} className="army-section-chip">
-                    <strong>{section.title}</strong>
-                    <span>
-                      {section.totalCount} | {section.totalPoints} pts
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : null}
-          </div>
-
-          <div className="toolbar-row">
-            <button
-              className={copiedState ? "tool-button active" : "tool-button"}
-              type="button"
-              onClick={() => void copyRoster()}
-              disabled={currentDraft.length === 0}
-            >
-              {copiedState ? <Check size={16} /> : <Copy size={16} />}
-              {copiedState ? "Copied" : "Copy list"}
-            </button>
-            <button className="tool-button" type="button" onClick={exportRosterJson} disabled={currentDraft.length === 0}>
-              <Download size={16} />
-              Export
-            </button>
-            <button className="tool-button danger" type="button" onClick={clearFactionRoster} disabled={currentDraft.length === 0}>
-              <Trash2 size={16} />
-              Clear
-            </button>
-          </div>
-
-          <div className="roster-list">
-            {armySections.map((section) => (
-              <section key={section.title} className="army-group">
-                <div className="army-group-head">
-                  <div>
-                    <h3>{section.title}</h3>
-                    <p>{section.totalCount} selections</p>
-                  </div>
-                  <strong>{section.totalPoints} pts</strong>
-                </div>
-
-                <div className="army-group-items">
-                  {section.items.map((item) => (
-                    <article key={item.unitId} className="roster-item">
-                      <div className="roster-item-top">
+                  return (
+                    <article key={army.id} className="army-home-card">
+                      <div className="army-card-top">
                         <div>
-                          <h3>{item.name}</h3>
-                          <div className="roster-item-meta">
-                            <span>{item.count}x in list</span>
-                            <span>{item.points} pts each</span>
-                          </div>
+                          <p className="eyebrow">Saved Army</p>
+                          <h3>{army.name}</h3>
+                          <p className="army-card-subtitle">
+                            {factionMeta?.name ?? formatSlugLabel(army.factionSlug)}
+                          </p>
                         </div>
-                        <strong>{item.points * item.count} pts</strong>
-                      </div>
 
-                      <div className="count-row">
-                        <button
-                          className="secondary-button compact-button"
-                          type="button"
-                          onClick={() => focusArmyUnit(item.unitId)}
-                        >
-                          <Crosshair size={14} />
-                          Inspect
-                        </button>
-                        <button
-                          className="icon-button"
-                          type="button"
-                          title={`Decrease ${item.name}`}
-                          onClick={() => adjustItemCount(item.unitId, item.count - 1)}
-                        >
-                          <Minus size={16} />
-                        </button>
-                        <span>{item.count}</span>
-                        <button
-                          className="icon-button"
-                          type="button"
-                          title={`Increase ${item.name}`}
-                          onClick={() => adjustItemCount(item.unitId, item.count + 1)}
-                        >
-                          <Plus size={16} />
-                        </button>
                         <button
                           className="icon-button danger"
                           type="button"
-                          title={`Remove ${item.name}`}
-                          onClick={() => adjustItemCount(item.unitId, 0)}
+                          title={`Delete ${army.name}`}
+                          onClick={() => deleteArmy(army.id)}
                         >
                           <Trash2 size={16} />
                         </button>
                       </div>
 
-                      <input
-                        className="note-field"
-                        value={item.note}
-                        onChange={(event) => updateItemNote(item.unitId, event.target.value)}
-                        placeholder="Optional note, wargear idea, role"
-                      />
+                      <div className="army-card-stats">
+                        <div className="army-card-stat">
+                          <span>Points</span>
+                          <strong>{armyPoints}</strong>
+                        </div>
+                        <div className="army-card-stat">
+                          <span>Selections</span>
+                          <strong>{armySelections}</strong>
+                        </div>
+                        <div className="army-card-stat">
+                          <span>Sections</span>
+                          <strong>{sectionCount}</strong>
+                        </div>
+                      </div>
+
+                      <div className="army-card-foot">
+                        <p className="army-card-updated">Updated {formatStamp(army.updatedAt)}</p>
+                        <button className="secondary-button compact-button" type="button" onClick={() => openArmy(army.id)}>
+                          Open Army
+                          <ChevronRight size={16} />
+                        </button>
+                      </div>
                     </article>
+                  );
+                })}
+              </div>
+            ) : (
+              <div className="home-empty">
+                <p className="eyebrow">No Armies Yet</p>
+                <h2>Create your first list</h2>
+                <p>
+                  Start a new army, choose its faction, and then jump straight into the builder. Saved armies will
+                  show up here so you can reopen them any time.
+                </p>
+                <button className="primary-button" type="button" onClick={beginNewArmy} disabled={indexLoading || !!indexError}>
+                  <FolderPlus size={16} />
+                  New Army
+                </button>
+              </div>
+            )}
+          </section>
+        </main>
+      ) : null}
+
+      {screen === "setup" ? (
+        <main className="screen-grid">
+          <section className="workspace-pane setup-pane">
+            <div className="pane-head">
+              <h2>New Army</h2>
+              <button className="secondary-button" type="button" onClick={returnHome}>
+                <ArrowLeft size={16} />
+                Armies
+              </button>
+            </div>
+
+            {indexLoading ? <Loader label="Loading faction index" /> : null}
+            {indexError ? <MessageTone tone="error" message={indexError} /> : null}
+
+            <div className="setup-layout">
+              <div>
+                <label className="field">
+                  <span>Army name</span>
+                  <input
+                    className="text-field"
+                    value={setupArmyName}
+                    onChange={(event) => setSetupArmyName(event.target.value)}
+                    placeholder="Optional, e.g. Canoptek Court 2000"
+                  />
+                </label>
+
+                <label className="field">
+                  <span>Alliance</span>
+                  <select
+                    value={setupAlliance}
+                    onChange={(event) => selectAlliance(event.target.value as Alliance)}
+                    disabled={!indexData}
+                  >
+                    {ALLIANCE_ORDER.map((alliance) => (
+                      <option key={alliance} value={alliance}>
+                        {alliance}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="field">
+                  <span>Faction</span>
+                  <select
+                    value={setupFactionSlug}
+                    onChange={(event) => selectFaction(event.target.value)}
+                    disabled={!visibleFactions.length}
+                  >
+                    {visibleFactions.map((faction) => (
+                      <option key={faction.slug} value={faction.slug}>
+                        {getFactionLabel(faction)}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <div className="setup-actions">
+                  <button className="secondary-button" type="button" onClick={returnHome}>
+                    <ArrowLeft size={16} />
+                    Cancel
+                  </button>
+                  <button className="primary-button" type="button" onClick={createArmy} disabled={!setupFactionMeta}>
+                    <FolderPlus size={16} />
+                    Create Army
+                  </button>
+                </div>
+              </div>
+
+              {setupFactionMeta ? (
+                <div className="meta-block">
+                  <div>
+                    <span>Faction</span>
+                    <strong>{setupFactionMeta.name}</strong>
+                  </div>
+                  <div>
+                    <span>Catalogue</span>
+                    <strong>{setupFactionMeta.sourceFile}</strong>
+                  </div>
+                  <div>
+                    <span>Revision</span>
+                    <strong>{setupFactionMeta.revision}</strong>
+                  </div>
+                  <div>
+                    <span>Indexed units</span>
+                    <strong>{setupFactionMeta.unitCount}</strong>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          </section>
+        </main>
+      ) : null}
+
+      {screen === "builder" && activeArmy ? (
+        <main className="builder-workspace">
+          <section className="workspace-pane library-pane">
+            <div className="builder-overview">
+              <div>
+                <p className="eyebrow">Army Builder</p>
+                <h2>{activeArmy.name}</h2>
+                <p className="builder-subtitle">
+                  {selectedFactionMeta?.name ?? formatSlugLabel(activeArmy.factionSlug)}
+                </p>
+              </div>
+
+              <div className="builder-head-actions">
+                <button className="secondary-button" type="button" onClick={returnHome}>
+                  <ArrowLeft size={16} />
+                  Armies
+                </button>
+                <button className="tool-button danger" type="button" onClick={() => deleteArmy(activeArmy.id)}>
+                  <Trash2 size={16} />
+                  Delete Army
+                </button>
+              </div>
+            </div>
+
+            <div className="builder-controls">
+              <label className="field">
+                <span>Search</span>
+                <div className="search-shell">
+                  <Search size={16} />
+                  <input
+                    value={searchTerm}
+                    onChange={(event) => setSearchTerm(event.target.value)}
+                    placeholder="Units, weapons, rules"
+                  />
+                </div>
+              </label>
+
+              {selectedFactionMeta ? (
+                <div className="detail-tags">
+                  <span>{getFactionLabel(selectedFactionMeta)}</span>
+                  <span>{selectedFactionMeta.unitCount} indexed units</span>
+                  <span>Rev. {selectedFactionMeta.revision}</span>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="pane-head">
+              <h2>Unit Library</h2>
+              <span>{filteredUnits.length} units</span>
+            </div>
+
+            {factionLoading ? <Loader label="Loading faction dossier" /> : null}
+            {factionError ? <MessageTone tone="error" message={factionError} /> : null}
+
+            <div className="library-grid">
+              <div className="unit-list">
+                {unitSections.map((section) => {
+                  const isExpanded = openSectionByArmy[activeArmy.id] === section.title;
+
+                  return (
+                    <section key={section.title} className="unit-section">
+                      <button
+                        className={isExpanded ? "unit-section-toggle expanded" : "unit-section-toggle"}
+                        type="button"
+                        onClick={() => toggleSection(section.title)}
+                        aria-expanded={isExpanded}
+                      >
+                        <span className="unit-section-label">
+                          <ChevronRight size={16} />
+                          <strong>{section.title}</strong>
+                        </span>
+                        <span className="unit-section-count">{section.units.length}</span>
+                      </button>
+
+                      {isExpanded ? (
+                        <div className="unit-section-items">
+                          {section.units.map((unit) => {
+                            const inRoster = currentDraft.find((item) => item.unitId === unit.id)?.count ?? 0;
+                            return (
+                              <article
+                                key={unit.id}
+                                className={selectedUnit?.id === unit.id ? "unit-card selected" : "unit-card"}
+                                onClick={() => openDatasheet(unit)}
+                              >
+                                <div className="unit-card-main">
+                                  <div>
+                                    <h3>{unit.name}</h3>
+                                    <p>{unit.selectionType}</p>
+                                  </div>
+                                  <strong>{formatPoints(unit.summary.points)}</strong>
+                                </div>
+
+                                <div className="unit-card-foot">
+                                  <span>{unit.summary.weapons.length} weapons</span>
+                                  <span>{unit.summary.abilities.length} abilities</span>
+                                  <button
+                                    className="icon-button accent"
+                                    type="button"
+                                    title={`Add ${unit.name}`}
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      addUnitToRoster(unit);
+                                    }}
+                                  >
+                                    <Plus size={16} />
+                                  </button>
+                                </div>
+
+                                {inRoster > 0 ? <span className="roster-count">{inRoster} in roster</span> : null}
+                              </article>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </section>
+                  );
+                })}
+
+                {!factionLoading && unitSections.length === 0 ? (
+                  <MessageTone tone="neutral" message="No units match the current filter set." />
+                ) : null}
+              </div>
+
+              <div className="detail-pane">
+                {selectedUnit ? (
+                  <>
+                    <div className="detail-hero">
+                      <div>
+                        <p className="eyebrow">{selectedUnit.summary.primaryCategory ?? selectedUnit.selectionType}</p>
+                        <h2>{selectedUnit.name}</h2>
+                        <div className="detail-tags">
+                          {selectedUnit.summary.categories.map((category) => (
+                            <span key={category}>{category}</span>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="detail-actions">
+                        <strong>{formatPoints(selectedUnit.summary.points)}</strong>
+                        <div className="detail-action-row">
+                          <button className="secondary-button" type="button" onClick={() => openDatasheet(selectedUnit)}>
+                            <Database size={16} />
+                            Datasheet
+                          </button>
+                          <button className="primary-button" type="button" onClick={() => addUnitToRoster(selectedUnit)}>
+                            <Plus size={16} />
+                            Add to roster
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="tab-row" role="tablist" aria-label="Unit detail sections">
+                      {[
+                        ["overview", "Overview"],
+                        ["weapons", "Weapons"],
+                        ["abilities", "Abilities"],
+                        ["options", "Options"],
+                        ["tree", "Tree"],
+                      ].map(([value, label]) => (
+                        <button
+                          key={value}
+                          className={detailTab === value ? "tab-button active" : "tab-button"}
+                          onClick={() =>
+                            setDetailTab(value as "overview" | "weapons" | "abilities" | "options" | "tree")
+                          }
+                          type="button"
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="detail-content">
+                      {detailTab === "overview" ? <OverviewSection unit={selectedUnit} /> : null}
+                      {detailTab === "weapons" ? <WeaponsSection unit={selectedUnit} /> : null}
+                      {detailTab === "abilities" ? <AbilitiesSection unit={selectedUnit} /> : null}
+                      {detailTab === "options" ? <OptionsSection options={selectedUnit.options} /> : null}
+                      {detailTab === "tree" ? <TreeSection tree={selectedUnit.tree} /> : null}
+                    </div>
+                  </>
+                ) : (
+                  <MessageTone tone="neutral" message="Select a unit to inspect its data." />
+                )}
+              </div>
+            </div>
+          </section>
+
+          <section className="workspace-pane roster-pane">
+            <div className="pane-head">
+              <h2>Army</h2>
+              <span>{totalPoints} pts</span>
+            </div>
+
+            <div className="army-sheet">
+              <div className="army-sheet-header">
+                <div className="army-sheet-title">
+                  <p className="eyebrow">Current Army</p>
+                  <h3>{activeArmy.name}</h3>
+                  <p className="army-sheet-subtitle">
+                    {selectedFactionMeta?.name ?? formatSlugLabel(activeArmy.factionSlug)}
+                  </p>
+                </div>
+
+                <div className="roster-summary">
+                  <div>
+                    <span>Total points</span>
+                    <strong>{totalPoints}</strong>
+                  </div>
+                  <div>
+                    <span>Selections</span>
+                    <strong>{totalSelections}</strong>
+                  </div>
+                  <div>
+                    <span>Sections</span>
+                    <strong>{armySections.length}</strong>
+                  </div>
+                </div>
+              </div>
+
+              {armySections.length > 0 ? (
+                <div className="army-section-strip">
+                  {armySections.map((section) => (
+                    <div key={section.title} className="army-section-chip">
+                      <strong>{section.title}</strong>
+                      <span>
+                        {section.totalCount} | {section.totalPoints} pts
+                      </span>
+                    </div>
                   ))}
                 </div>
-              </section>
-            ))}
+              ) : null}
+            </div>
 
-            {currentDraft.length === 0 ? (
-              <MessageTone tone="neutral" message="Your roster is empty. Add units from the library to start building." />
-            ) : null}
-          </div>
-        </section>
-      </main>
+            <div className="toolbar-row">
+              <button
+                className={copiedState ? "tool-button active" : "tool-button"}
+                type="button"
+                onClick={() => void copyRoster()}
+                disabled={currentDraft.length === 0}
+              >
+                {copiedState ? <Check size={16} /> : <Copy size={16} />}
+                {copiedState ? "Copied" : "Copy list"}
+              </button>
+              <button className="tool-button" type="button" onClick={exportRosterJson} disabled={currentDraft.length === 0}>
+                <Download size={16} />
+                Export
+              </button>
+              <button className="tool-button danger" type="button" onClick={clearArmyRoster} disabled={currentDraft.length === 0}>
+                <Trash2 size={16} />
+                Clear
+              </button>
+            </div>
 
-      {datasheetUnit ? (
+            <div className="roster-list">
+              {armySections.map((section) => (
+                <section key={section.title} className="army-group">
+                  <div className="army-group-head">
+                    <div>
+                      <h3>{section.title}</h3>
+                      <p>{section.totalCount} selections</p>
+                    </div>
+                    <strong>{section.totalPoints} pts</strong>
+                  </div>
+
+                  <div className="army-group-items">
+                    {section.items.map((item) => (
+                      <article key={item.unitId} className="roster-item">
+                        <div className="roster-item-top">
+                          <div>
+                            <h3>{item.name}</h3>
+                            <div className="roster-item-meta">
+                              <span>{item.count}x in list</span>
+                              <span>{item.points} pts each</span>
+                            </div>
+                          </div>
+                          <strong>{item.points * item.count} pts</strong>
+                        </div>
+
+                        <div className="count-row">
+                          <button
+                            className="secondary-button compact-button"
+                            type="button"
+                            onClick={() => focusArmyUnit(item.unitId)}
+                          >
+                            <Crosshair size={14} />
+                            Inspect
+                          </button>
+                          <button
+                            className="icon-button"
+                            type="button"
+                            title={`Decrease ${item.name}`}
+                            onClick={() => adjustItemCount(item.unitId, item.count - 1)}
+                          >
+                            <Minus size={16} />
+                          </button>
+                          <span>{item.count}</span>
+                          <button
+                            className="icon-button"
+                            type="button"
+                            title={`Increase ${item.name}`}
+                            onClick={() => adjustItemCount(item.unitId, item.count + 1)}
+                          >
+                            <Plus size={16} />
+                          </button>
+                          <button
+                            className="icon-button danger"
+                            type="button"
+                            title={`Remove ${item.name}`}
+                            onClick={() => adjustItemCount(item.unitId, 0)}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        </div>
+
+                        <input
+                          className="note-field"
+                          value={item.note}
+                          onChange={(event) => updateItemNote(item.unitId, event.target.value)}
+                          placeholder="Optional note, wargear idea, role"
+                        />
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              ))}
+
+              {currentDraft.length === 0 ? (
+                <MessageTone tone="neutral" message="Your roster is empty. Add units from the library to start building." />
+              ) : null}
+            </div>
+          </section>
+        </main>
+      ) : null}
+
+      {screen === "builder" && datasheetUnit ? (
         <DatasheetModal unit={datasheetUnit} onClose={closeDatasheet} onAddToRoster={() => addUnitToRoster(datasheetUnit)} />
       ) : null}
     </div>
@@ -1294,6 +1539,86 @@ function formatStamp(raw: string): string {
     month: "short",
     day: "numeric",
   }).format(date);
+}
+
+function migrateStoredState(stored: StoredState): {
+  armies: StoredArmy[];
+  activeArmyId: string | null;
+  selectedUnitIdByArmy: Record<string, string>;
+} {
+  if (stored.armies?.length) {
+    const armies = stored.armies.map((army) => ({
+      ...army,
+      createdAt: army.createdAt ?? army.updatedAt,
+      updatedAt: army.updatedAt ?? army.createdAt,
+      items: Array.isArray(army.items) ? army.items : [],
+    }));
+
+    return {
+      armies,
+      activeArmyId: stored.activeArmyId ?? armies[0]?.id ?? null,
+      selectedUnitIdByArmy: stored.selectedUnitIdByArmy ?? {},
+    };
+  }
+
+  const selectedUnitIdByArmy: Record<string, string> = {};
+  const armies = Object.entries(stored.draftsByFaction ?? {})
+    .filter(([, draft]) => Array.isArray(draft.items))
+    .map(([factionSlug, draft], index) => {
+      const id = `legacy-${factionSlug}-${index}`;
+      const legacySelectedUnit = stored.selectedUnitIdByFaction?.[factionSlug];
+      if (legacySelectedUnit) {
+        selectedUnitIdByArmy[id] = legacySelectedUnit;
+      }
+
+      return {
+        id,
+        name: `${formatSlugLabel(factionSlug)} Army`,
+        factionSlug,
+        createdAt: draft.updatedAt,
+        updatedAt: draft.updatedAt,
+        items: draft.items,
+      };
+    });
+
+  const activeArmyId = stored.selectedFactionSlug
+    ? armies.find((army) => army.factionSlug === stored.selectedFactionSlug)?.id ?? armies[0]?.id ?? null
+    : armies[0]?.id ?? null;
+
+  return {
+    armies,
+    activeArmyId,
+    selectedUnitIdByArmy,
+  };
+}
+
+function createArmyId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  return `army-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function buildArmyName(faction: FactionMeta, armies: StoredArmy[]): string {
+  const base = `${getFactionLabel(faction)} Army`;
+  const existingCount = armies.filter((army) => army.factionSlug === faction.slug).length;
+  return existingCount === 0 ? base : `${base} ${existingCount + 1}`;
+}
+
+function formatSlugLabel(slug: string): string {
+  return slug
+    .split("-")
+    .filter(Boolean)
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(" ");
+}
+
+function slugify(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }
 
 function getFactionAlliance(name: string): Alliance {

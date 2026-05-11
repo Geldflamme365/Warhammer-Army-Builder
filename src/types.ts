@@ -129,7 +129,19 @@ export type StoredDraft = {
   items: RosterItem[];
 };
 
+export type StoredArmy = {
+  id: string;
+  name: string;
+  factionSlug: string;
+  createdAt: string;
+  updatedAt: string;
+  items: RosterItem[];
+};
+
 export type StoredState = {
+  armies?: StoredArmy[];
+  activeArmyId?: string | null;
+  selectedUnitIdByArmy?: Record<string, string>;
   selectedFactionSlug?: string;
   selectedUnitIdByFaction?: Record<string, string>;
   draftsByFaction?: Record<string, StoredDraft>;

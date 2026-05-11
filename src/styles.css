@@ -75,6 +75,19 @@ summary:focus-visible {
   padding: 20px;
 }
 
+.screen-grid {
+  display: grid;
+  max-width: 1200px;
+  margin: 0 auto;
+}
+
+.builder-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, 380px);
+  gap: 12px;
+  align-items: start;
+}
+
 .app-header {
   display: grid;
   gap: 12px;
@@ -178,7 +191,8 @@ summary:focus-visible {
 
 select,
 .search-shell,
-.note-field {
+.note-field,
+.text-field {
   width: 100%;
   border: 1px solid var(--line-strong);
   border-radius: 6px;
@@ -187,7 +201,8 @@ select,
 }
 
 select,
-.note-field {
+.note-field,
+.text-field {
   min-height: 42px;
   padding: 10px 12px;
 }
@@ -494,8 +509,140 @@ select,
   font-size: 0.8rem;
 }
 
+.home-empty {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+  align-content: center;
+  min-height: 320px;
+  padding: 24px;
+  border: 1px dashed var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.home-empty h2,
+.builder-overview h2 {
+  margin: 0;
+  font-size: 1.35rem;
+  font-weight: 600;
+}
+
+.home-empty p {
+  max-width: 56ch;
+  margin: 0;
+  color: var(--muted);
+}
+
+.army-home-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.army-home-card {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--ink);
+  text-align: left;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.army-home-card:hover {
+  border-color: var(--line-strong);
+  background: #ffffff;
+}
+
+.army-card-top,
+.builder-overview {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.army-card-top h3 {
+  margin: 0;
+  font-size: 1.02rem;
+  font-weight: 600;
+}
+
+.army-card-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.army-card-stats {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.army-card-stat {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.army-card-stat span,
+.army-card-updated {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.army-card-updated {
+  margin: 0;
+}
+
+.army-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.setup-layout {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+  align-items: start;
+}
+
+.setup-actions,
+.builder-head-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.setup-actions {
+  margin-top: 4px;
+}
+
+.builder-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.builder-controls {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
 .detail-pane {
   display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  align-content: start;
   gap: 10px;
   min-height: 0;
 }
@@ -531,15 +678,19 @@ select,
 .tab-row {
   display: flex;
   flex-wrap: wrap;
+  align-items: flex-start;
+  align-content: flex-start;
   gap: 4px;
 }
 
 .tab-button {
+  flex: 0 0 auto;
   min-height: 30px;
   padding: 0 8px;
   background: var(--surface-alt);
   color: var(--muted);
   font-size: 0.82rem;
+  white-space: nowrap;
 }
 
 .tab-button.active {
@@ -979,12 +1130,11 @@ select,
 }
 
 @media (max-width: 1400px) {
-  .workspace {
-    grid-template-columns: minmax(250px, 290px) minmax(0, 1fr);
+  .builder-workspace {
+    grid-template-columns: 1fr;
   }
 
-  .roster-pane {
-    grid-column: 1 / -1;
+  .builder-workspace .roster-pane {
     min-height: auto;
   }
 }
@@ -997,6 +1147,10 @@ select,
   .datasheet-layout {
     grid-template-columns: 1fr;
   }
+
+  .setup-layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1004,7 +1158,7 @@ select,
     padding: 14px;
   }
 
-  .workspace {
+  .builder-workspace {
     grid-template-columns: 1fr;
   }
 
@@ -1014,6 +1168,19 @@ select,
 
   .roster-summary {
     grid-template-columns: 1fr;
+  }
+
+  .army-card-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .army-card-top,
+  .builder-overview,
+  .builder-head-actions,
+  .setup-actions,
+  .army-card-foot {
+    flex-direction: column;
+    align-items: stretch;
   }
 
   .army-group-head {
