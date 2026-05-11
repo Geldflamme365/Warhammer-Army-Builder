@@ -30,7 +30,6 @@ import type {
 } from "./types";
 
 const STORAGE_KEY = "warhammer-army-builder.prototype";
-const ROLE_ALL = "All";
 const ALLIANCE_ORDER = ["Xenos", "Imperium - Astartes", "Imperium - Other", "Chaos"] as const;
 
 type Alliance = (typeof ALLIANCE_ORDER)[number];
@@ -49,11 +48,11 @@ function App() {
   const [datasheetUnitId, setDatasheetUnitId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const deferredSearch = useDeferredValue(searchTerm);
-  const [activeRole, setActiveRole] = useState(ROLE_ALL);
   const [detailTab, setDetailTab] = useState<"overview" | "weapons" | "abilities" | "options" | "tree">(
     "overview",
   );
   const [copiedState, setCopiedState] = useState(false);
+  const [expandedSectionsByFaction, setExpandedSectionsByFaction] = useState<Record<string, Record<string, boolean>>>({});
 
   const [draftsByFaction, setDraftsByFaction] = useState<Record<string, { updatedAt: string; items: RosterItem[] }>>(
     {},
@@ -193,23 +192,9 @@ function App() {
   const activeFaction = selectedFactionMeta ? loadedFactions[selectedFactionMeta.slug] : undefined;
   const units = activeFaction?.units ?? [];
 
-  const roles = useMemo(() => {
-    const found = new Set<string>();
-    for (const unit of units) {
-      if (unit.summary.primaryCategory) {
-        found.add(unit.summary.primaryCategory);
-      }
-    }
-    return [ROLE_ALL, ...Array.from(found).sort()];
-  }, [units]);
-
   const filteredUnits = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
     return units.filter((unit) => {
-      const roleMatch = activeRole === ROLE_ALL || unit.summary.primaryCategory === activeRole;
-      if (!roleMatch) {
-        return false;
-      }
       if (!query) {
         return true;
       }
@@ -225,7 +210,25 @@ function App() {
         .toLowerCase();
       return haystack.includes(query);
     });
-  }, [activeRole, deferredSearch, units]);
+  }, [deferredSearch, units]);
+
+  const unitSections = useMemo(() => {
+    const grouped = filteredUnits.reduce<Record<string, UnitRecord[]>>((sections, unit) => {
+      const key = unit.summary.primaryCategory ?? "Other";
+      if (!sections[key]) {
+        sections[key] = [];
+      }
+      sections[key].push(unit);
+      return sections;
+    }, {});
+
+    return Object.entries(grouped)
+      .map(([title, sectionUnits]) => ({
+        title,
+        units: sectionUnits.sort((left, right) => left.name.localeCompare(right.name)),
+      }))
+      .sort((left, right) => left.title.localeCompare(right.title));
+  }, [filteredUnits]);
 
   const selectedUnitId = selectedFactionSlug ? selectedUnitIdByFaction[selectedFactionSlug] : undefined;
 
@@ -242,6 +245,24 @@ function App() {
       }));
     }
   }, [filteredUnits, selectedFactionSlug, selectedUnitIdByFaction]);
+
+  useEffect(() => {
+    if (!selectedFactionSlug || !unitSections.length) {
+      return;
+    }
+    setExpandedSectionsByFaction((current) => {
+      if (current[selectedFactionSlug]) {
+        return current;
+      }
+      const initialSections = Object.fromEntries(
+        unitSections.map((section, index) => [section.title, index === 0]),
+      );
+      return {
+        ...current,
+        [selectedFactionSlug]: initialSections,
+      };
+    });
+  }, [selectedFactionSlug, unitSections]);
 
   const selectedUnit =
     filteredUnits.find((unit) => unit.id === selectedUnitId) ??
@@ -306,7 +327,6 @@ function App() {
       const nextFactionSlug = keepCurrentFaction ? selectedFactionSlug : availableFactions[0]?.slug ?? "";
 
       setSelectedFactionSlug(nextFactionSlug);
-      setActiveRole(ROLE_ALL);
       setSearchTerm("");
       setDetailTab("overview");
     });
@@ -319,9 +339,24 @@ function App() {
       if (factionMeta) {
         setSelectedAlliance(getFactionAlliance(factionMeta.name));
       }
-      setActiveRole(ROLE_ALL);
       setSearchTerm("");
       setDetailTab("overview");
+    });
+  }
+
+  function toggleSection(sectionTitle: string) {
+    if (!selectedFactionSlug) {
+      return;
+    }
+    setExpandedSectionsByFaction((current) => {
+      const factionSections = current[selectedFactionSlug] ?? {};
+      return {
+        ...current,
+        [selectedFactionSlug]: {
+          ...factionSections,
+          [sectionTitle]: !factionSections[sectionTitle],
+        },
+      };
     });
   }
 
@@ -502,22 +537,6 @@ function App() {
             </div>
           </label>
 
-          <div className="field">
-            <span>Role</span>
-            <div className="chip-grid">
-              {roles.map((role) => (
-                <button
-                  key={role}
-                  className={role === activeRole ? "chip-button active" : "chip-button"}
-                  onClick={() => setActiveRole(role)}
-                  type="button"
-                >
-                  {role}
-                </button>
-              ))}
-            </div>
-          </div>
-
           {selectedFactionMeta ? (
             <div className="meta-block">
               <div>
@@ -539,7 +558,7 @@ function App() {
         <section className="workspace-pane library-pane">
           <div className="pane-head">
             <h2>Unit Library</h2>
-            <span>{filteredUnits.length} shown</span>
+            <span>{filteredUnits.length} units</span>
           </div>
 
           {factionLoading ? <Loader label="Loading faction dossier" /> : null}
@@ -547,50 +566,71 @@ function App() {
 
           <div className="library-grid">
             <div className="unit-list">
-              {filteredUnits.map((unit) => {
-                const inRoster = currentDraft.find((item) => item.unitId === unit.id)?.count ?? 0;
+              {unitSections.map((section) => {
+                const isExpanded =
+                  deferredSearch.trim().length > 0 ||
+                  expandedSectionsByFaction[selectedFactionSlug]?.[section.title] === true ||
+                  section.units.some((unit) => unit.id === selectedUnit?.id);
+
                 return (
-                  <article
-                    key={unit.id}
-                    className={selectedUnit?.id === unit.id ? "unit-card selected" : "unit-card"}
-                    onClick={() => openDatasheet(unit)}
-                  >
-                    <div className="unit-card-main">
-                      <div>
-                        <h3>{unit.name}</h3>
-                        <p>{unit.summary.primaryCategory ?? unit.selectionType}</p>
+                  <section key={section.title} className="unit-section">
+                    <button
+                      className={isExpanded ? "unit-section-toggle expanded" : "unit-section-toggle"}
+                      type="button"
+                      onClick={() => toggleSection(section.title)}
+                    >
+                      <span className="unit-section-label">
+                        <ChevronRight size={16} />
+                        <strong>{section.title}</strong>
+                      </span>
+                      <span className="unit-section-count">{section.units.length}</span>
+                    </button>
+
+                    {isExpanded ? (
+                      <div className="unit-section-items">
+                        {section.units.map((unit) => {
+                          const inRoster = currentDraft.find((item) => item.unitId === unit.id)?.count ?? 0;
+                          return (
+                            <article
+                              key={unit.id}
+                              className={selectedUnit?.id === unit.id ? "unit-card selected" : "unit-card"}
+                              onClick={() => openDatasheet(unit)}
+                            >
+                              <div className="unit-card-main">
+                                <div>
+                                  <h3>{unit.name}</h3>
+                                  <p>{unit.selectionType}</p>
+                                </div>
+                                <strong>{formatPoints(unit.summary.points)}</strong>
+                              </div>
+
+                              <div className="unit-card-foot">
+                                <span>{unit.summary.weapons.length} weapons</span>
+                                <span>{unit.summary.abilities.length} abilities</span>
+                                <button
+                                  className="icon-button accent"
+                                  type="button"
+                                  title={`Add ${unit.name}`}
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    addUnitToRoster(unit);
+                                  }}
+                                >
+                                  <Plus size={16} />
+                                </button>
+                              </div>
+
+                              {inRoster > 0 ? <span className="roster-count">{inRoster} in roster</span> : null}
+                            </article>
+                          );
+                        })}
                       </div>
-                      <strong>{formatPoints(unit.summary.points)}</strong>
-                    </div>
-
-                    <div className="unit-card-tags">
-                      {unit.summary.categories.slice(0, 4).map((category) => (
-                        <span key={category}>{category}</span>
-                      ))}
-                    </div>
-
-                    <div className="unit-card-foot">
-                      <span>{unit.summary.weapons.length} weapons</span>
-                      <span>{unit.summary.abilities.length} abilities</span>
-                      <button
-                        className="icon-button accent"
-                        type="button"
-                        title={`Add ${unit.name}`}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          addUnitToRoster(unit);
-                        }}
-                      >
-                        <Plus size={16} />
-                      </button>
-                    </div>
-
-                    {inRoster > 0 ? <span className="roster-count">{inRoster} in roster</span> : null}
-                  </article>
+                    ) : null}
+                  </section>
                 );
               })}
 
-              {!factionLoading && filteredUnits.length === 0 ? (
+              {!factionLoading && unitSections.length === 0 ? (
                 <MessageTone tone="neutral" message="No units match the current filter set." />
               ) : null}
             </div>
