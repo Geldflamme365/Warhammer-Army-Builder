@@ -12,6 +12,7 @@ import {
   Shield,
   Swords,
   Trash2,
+  X,
 } from "lucide-react";
 import { startTransition, useDeferredValue, useEffect, useMemo, useState } from "react";
 import { loadCatalogueIndex, loadFactionCatalogue } from "./data";
@@ -30,7 +31,7 @@ import type {
 
 const STORAGE_KEY = "warhammer-army-builder.prototype";
 const ROLE_ALL = "All";
-const ALLIANCE_ORDER = ["Xenos", "Imperium", "Chaos"] as const;
+const ALLIANCE_ORDER = ["Xenos", "Imperium - Astartes", "Imperium - Other", "Chaos"] as const;
 
 type Alliance = (typeof ALLIANCE_ORDER)[number];
 
@@ -45,6 +46,7 @@ function App() {
 
   const [selectedAlliance, setSelectedAlliance] = useState<Alliance>("Xenos");
   const [selectedFactionSlug, setSelectedFactionSlug] = useState<string>("");
+  const [datasheetUnitId, setDatasheetUnitId] = useState<string | null>(null);
   const [searchTerm, setSearchTerm] = useState("");
   const deferredSearch = useDeferredValue(searchTerm);
   const [activeRole, setActiveRole] = useState(ROLE_ALL);
@@ -115,7 +117,8 @@ function App() {
   const factionsByAlliance = useMemo(() => {
     const grouped: Record<Alliance, FactionMeta[]> = {
       Xenos: [],
-      Imperium: [],
+      "Imperium - Astartes": [],
+      "Imperium - Other": [],
       Chaos: [],
     };
 
@@ -124,9 +127,7 @@ function App() {
     }
 
     for (const alliance of ALLIANCE_ORDER) {
-      grouped[alliance].sort((left, right) =>
-        getFactionLabel(left, alliance).localeCompare(getFactionLabel(right, alliance)),
-      );
+      grouped[alliance].sort((left, right) => getFactionLabel(left).localeCompare(getFactionLabel(right)));
     }
 
     return grouped;
@@ -248,10 +249,37 @@ function App() {
     filteredUnits[0] ??
     units[0] ??
     null;
+  const datasheetUnit = datasheetUnitId ? units.find((unit) => unit.id === datasheetUnitId) ?? null : null;
 
   const currentDraft = draftsByFaction[selectedFactionSlug]?.items ?? [];
   const totalPoints = currentDraft.reduce((sum, item) => sum + item.points * item.count, 0);
   const totalSelections = currentDraft.reduce((sum, item) => sum + item.count, 0);
+
+  useEffect(() => {
+    if (datasheetUnitId && !units.some((unit) => unit.id === datasheetUnitId)) {
+      setDatasheetUnitId(null);
+    }
+  }, [datasheetUnitId, units]);
+
+  useEffect(() => {
+    if (!datasheetUnit) {
+      document.body.style.overflow = "";
+      return;
+    }
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setDatasheetUnitId(null);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [datasheetUnit]);
 
   function updateDraft(updater: (items: RosterItem[]) => RosterItem[]) {
     if (!selectedFactionSlug) {
@@ -295,6 +323,15 @@ function App() {
       setSearchTerm("");
       setDetailTab("overview");
     });
+  }
+
+  function openDatasheet(unit: UnitRecord) {
+    selectUnit(unit.id);
+    setDatasheetUnitId(unit.id);
+  }
+
+  function closeDatasheet() {
+    setDatasheetUnitId(null);
   }
 
   function selectUnit(unitId: string) {
@@ -447,7 +484,7 @@ function App() {
             >
               {visibleFactions.map((faction) => (
                 <option key={faction.slug} value={faction.slug}>
-                  {getFactionLabel(faction, selectedAlliance)}
+                  {getFactionLabel(faction)}
                 </option>
               ))}
             </select>
@@ -516,7 +553,7 @@ function App() {
                   <article
                     key={unit.id}
                     className={selectedUnit?.id === unit.id ? "unit-card selected" : "unit-card"}
-                    onClick={() => selectUnit(unit.id)}
+                    onClick={() => openDatasheet(unit)}
                   >
                     <div className="unit-card-main">
                       <div>
@@ -574,10 +611,16 @@ function App() {
 
                     <div className="detail-actions">
                       <strong>{formatPoints(selectedUnit.summary.points)}</strong>
-                      <button className="primary-button" type="button" onClick={() => addUnitToRoster(selectedUnit)}>
-                        <Plus size={16} />
-                        Add to roster
-                      </button>
+                      <div className="detail-action-row">
+                        <button className="secondary-button" type="button" onClick={() => openDatasheet(selectedUnit)}>
+                          <Database size={16} />
+                          Datasheet
+                        </button>
+                        <button className="primary-button" type="button" onClick={() => addUnitToRoster(selectedUnit)}>
+                          <Plus size={16} />
+                          Add to roster
+                        </button>
+                      </div>
                     </div>
                   </div>
 
@@ -714,6 +757,167 @@ function App() {
           </div>
         </section>
       </main>
+
+      {datasheetUnit ? (
+        <DatasheetModal unit={datasheetUnit} onClose={closeDatasheet} onAddToRoster={() => addUnitToRoster(datasheetUnit)} />
+      ) : null}
+    </div>
+  );
+}
+
+function DatasheetModal({
+  unit,
+  onClose,
+  onAddToRoster,
+}: {
+  unit: UnitRecord;
+  onClose: () => void;
+  onAddToRoster: () => void;
+}) {
+  const groupedWeapons = groupBy(unit.summary.weapons, (profile) => profile.typeName);
+
+  return (
+    <div className="datasheet-backdrop" onClick={onClose}>
+      <div
+        className="datasheet-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${unit.name} datasheet`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="datasheet-header">
+          <div>
+            <p className="eyebrow datasheet-eyebrow">{unit.summary.primaryCategory ?? unit.selectionType}</p>
+            <h2>{unit.name}</h2>
+            <div className="detail-tags">
+              {unit.summary.categories.map((category) => (
+                <span key={category}>{category}</span>
+              ))}
+            </div>
+          </div>
+
+          <div className="datasheet-header-tools">
+            <strong>{formatPoints(unit.summary.points)}</strong>
+            <button className="primary-button" type="button" onClick={onAddToRoster}>
+              <Plus size={16} />
+              Add to roster
+            </button>
+            <button className="icon-button" type="button" title="Close datasheet" onClick={onClose}>
+              <X size={18} />
+            </button>
+          </div>
+        </div>
+
+        <div className="datasheet-layout">
+          <div className="datasheet-main">
+            <section className="datasheet-section">
+              <div className="section-head">
+                <Shield size={16} />
+                <h3>Unit Profile</h3>
+              </div>
+              <div className="profile-grid">
+                {unit.summary.stats.map((profile) => (
+                  <ProfileCard key={`${profile.name}-${profile.typeName}`} profile={profile} />
+                ))}
+                {unit.summary.transport.map((profile) => (
+                  <ProfileCard key={`${profile.name}-${profile.typeName}`} profile={profile} />
+                ))}
+              </div>
+            </section>
+
+            <section className="datasheet-section">
+              <div className="section-head">
+                <Swords size={16} />
+                <h3>Weapons</h3>
+              </div>
+              <div className="weapon-table">
+                {Object.entries(groupedWeapons).map(([groupName, profiles]) => (
+                  <div key={groupName} className="datasheet-weapon-group">
+                    <p className="datasheet-subhead">{groupName}</p>
+                    {profiles.map((profile) => (
+                      <article key={`${profile.name}-${groupName}`} className="weapon-row">
+                        <h4>{profile.name}</h4>
+                        <div className="stat-badges">
+                          {Object.entries(profile.characteristics).map(([label, value]) => (
+                            <span key={label}>
+                              <strong>{label}</strong>
+                              {value}
+                            </span>
+                          ))}
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                ))}
+                {unit.summary.weapons.length === 0 ? (
+                  <MessageTone tone="neutral" message="No weapon profiles found." />
+                ) : null}
+              </div>
+            </section>
+
+            <section className="datasheet-section">
+              <div className="section-head">
+                <Crosshair size={16} />
+                <h3>Abilities</h3>
+              </div>
+              <div className="ability-list">
+                {unit.summary.abilities.map((profile) => (
+                  <article key={`${profile.name}-${profile.typeName}`} className="ability-row">
+                    <h4>{profile.name}</h4>
+                    <p>{profile.characteristics.Description ?? "No description on record."}</p>
+                  </article>
+                ))}
+                {unit.summary.abilities.length === 0 ? (
+                  <MessageTone tone="neutral" message="No ability profiles found." />
+                ) : null}
+              </div>
+            </section>
+          </div>
+
+          <aside className="datasheet-side">
+            <section className="datasheet-section side-block">
+              <div className="section-head">
+                <ChevronRight size={16} />
+                <h3>Core Rules</h3>
+              </div>
+              <div className="detail-tags">
+                {unit.summary.rules.map((rule) => (
+                  <span key={rule}>{rule}</span>
+                ))}
+                {unit.summary.rules.length === 0 ? <span>None listed</span> : null}
+              </div>
+            </section>
+
+            <section className="datasheet-section side-block">
+              <div className="section-head">
+                <Database size={16} />
+                <h3>Sheet Data</h3>
+              </div>
+              <div className="summary-grid datasheet-summary-grid">
+                <InfoTile label="Selection type" value={unit.selectionType} />
+                <InfoTile label="Weapons" value={String(unit.summary.weapons.length)} />
+                <InfoTile label="Abilities" value={String(unit.summary.abilities.length)} />
+                <InfoTile label="Options" value={String(unit.options.length)} />
+              </div>
+            </section>
+
+            <section className="datasheet-section side-block">
+              <div className="section-head">
+                <Shield size={16} />
+                <h3>Datasheet Tree</h3>
+              </div>
+              <p className="datasheet-note">
+                The prototype still keeps the full BSData tree for this unit, including nested options and linked
+                rules.
+              </p>
+              <details className="json-panel">
+                <summary>Open raw tree JSON</summary>
+                <pre>{JSON.stringify(unit.tree, null, 2)}</pre>
+              </details>
+            </section>
+          </aside>
+        </div>
+      </div>
     </div>
   );
 }
@@ -958,16 +1162,35 @@ function formatStamp(raw: string): string {
 }
 
 function getFactionAlliance(name: string): Alliance {
-  const [prefix] = name.split(" - ", 1);
-  if (ALLIANCE_ORDER.includes(prefix as Alliance)) {
-    return prefix as Alliance;
+  if (name.startsWith("Imperium - Adeptus Astartes - ")) {
+    return "Imperium - Astartes";
+  }
+  if (name.startsWith("Imperium - ")) {
+    return "Imperium - Other";
+  }
+  if (name.startsWith("Chaos - ")) {
+    return "Chaos";
+  }
+  if (name.startsWith("Xenos - ")) {
+    return "Xenos";
   }
   return "Xenos";
 }
 
-function getFactionLabel(faction: FactionMeta, alliance: Alliance): string {
-  const prefix = `${alliance} - `;
-  return faction.name.startsWith(prefix) ? faction.name.slice(prefix.length) : faction.name;
+function getFactionLabel(faction: FactionMeta): string {
+  if (faction.name.startsWith("Imperium - Adeptus Astartes - ")) {
+    return faction.name.slice("Imperium - Adeptus Astartes - ".length);
+  }
+  if (faction.name.startsWith("Imperium - ")) {
+    return faction.name.slice("Imperium - ".length);
+  }
+  if (faction.name.startsWith("Chaos - ")) {
+    return faction.name.slice("Chaos - ".length);
+  }
+  if (faction.name.startsWith("Xenos - ")) {
+    return faction.name.slice("Xenos - ".length);
+  }
+  return faction.name;
 }
 
 function groupBy<T>(items: T[], getKey: (item: T) => string) {

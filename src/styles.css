@@ -344,6 +344,7 @@ select,
 .icon-button,
 .tool-button,
 .primary-button,
+.secondary-button,
 .tab-button {
   display: inline-flex;
   align-items: center;
@@ -388,6 +389,11 @@ select,
   padding: 0 16px;
 }
 
+.secondary-button {
+  padding: 0 16px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
 .detail-pane {
   display: grid;
   gap: 14px;
@@ -406,6 +412,13 @@ select,
   display: grid;
   justify-items: end;
   gap: 12px;
+}
+
+.detail-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .tab-row {
@@ -613,6 +626,109 @@ select,
   color: var(--danger);
 }
 
+.datasheet-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  align-items: stretch;
+  justify-content: center;
+  padding: 28px;
+  background: rgba(18, 22, 28, 0.58);
+  backdrop-filter: blur(8px);
+}
+
+.datasheet-modal {
+  width: min(1240px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(250, 246, 239, 0.98), rgba(235, 227, 214, 0.98)),
+    linear-gradient(120deg, rgba(141, 48, 42, 0.08), transparent 30%);
+  box-shadow: 0 26px 56px rgba(15, 20, 25, 0.34);
+}
+
+.datasheet-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 22px 24px;
+  border-bottom: 1px solid rgba(159, 139, 114, 0.42);
+  background: linear-gradient(135deg, rgba(20, 26, 32, 0.96), rgba(31, 40, 49, 0.92));
+  color: #f7f2e8;
+}
+
+.datasheet-header h2 {
+  margin: 0 0 10px;
+  font-family: "Cinzel", serif;
+  font-size: clamp(1.8rem, 1.5vw + 1.3rem, 2.5rem);
+}
+
+.datasheet-eyebrow {
+  color: rgba(247, 242, 232, 0.74);
+}
+
+.datasheet-header .detail-tags span {
+  border-color: rgba(247, 242, 232, 0.12);
+  background: rgba(247, 242, 232, 0.08);
+  color: rgba(247, 242, 232, 0.96);
+}
+
+.datasheet-header-tools {
+  display: grid;
+  justify-items: end;
+  gap: 10px;
+}
+
+.datasheet-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(280px, 360px);
+  gap: 18px;
+  padding: 18px;
+}
+
+.datasheet-main,
+.datasheet-side {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.datasheet-section {
+  padding: 16px;
+  border: 1px solid rgba(159, 139, 114, 0.34);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.66);
+}
+
+.side-block {
+  background: rgba(249, 246, 240, 0.78);
+}
+
+.datasheet-subhead {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.datasheet-weapon-group + .datasheet-weapon-group {
+  margin-top: 12px;
+}
+
+.datasheet-summary-grid {
+  grid-template-columns: 1fr;
+}
+
+.datasheet-note {
+  margin: 0 0 12px;
+  color: var(--muted);
+}
+
 .spin {
   animation: spin 800ms linear infinite;
 }
@@ -631,6 +747,10 @@ select,
   .roster-pane {
     grid-column: 1 / -1;
     min-height: auto;
+  }
+
+  .datasheet-layout {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -657,5 +777,18 @@ select,
 
   .toolbar-row {
     flex-wrap: wrap;
+  }
+
+  .datasheet-backdrop {
+    padding: 12px;
+  }
+
+  .datasheet-header {
+    grid-template-columns: 1fr;
+    display: grid;
+  }
+
+  .datasheet-header-tools {
+    justify-items: stretch;
   }
 }
