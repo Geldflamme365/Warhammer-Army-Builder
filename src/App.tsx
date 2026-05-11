@@ -18,6 +18,7 @@ import { loadCatalogueIndex, loadFactionCatalogue } from "./data";
 import type {
   CatalogueIndex,
   Constraint,
+  FactionMeta,
   FactionData,
   Modifier,
   Profile,
@@ -29,6 +30,9 @@ import type {
 
 const STORAGE_KEY = "warhammer-army-builder.prototype";
 const ROLE_ALL = "All";
+const ALLIANCE_ORDER = ["Xenos", "Imperium", "Chaos"] as const;
+
+type Alliance = (typeof ALLIANCE_ORDER)[number];
 
 function App() {
   const [indexData, setIndexData] = useState<CatalogueIndex | null>(null);
@@ -39,6 +43,7 @@ function App() {
   const [factionLoading, setFactionLoading] = useState(false);
   const [factionError, setFactionError] = useState<string>("");
 
+  const [selectedAlliance, setSelectedAlliance] = useState<Alliance>("Xenos");
   const [selectedFactionSlug, setSelectedFactionSlug] = useState<string>("");
   const [searchTerm, setSearchTerm] = useState("");
   const deferredSearch = useDeferredValue(searchTerm);
@@ -81,8 +86,15 @@ function App() {
       .then((data) => {
         setIndexData(data);
         setIndexError("");
-        if (!selectedFactionSlug && data.factions.length > 0) {
-          setSelectedFactionSlug(data.factions[17]?.slug ?? data.factions[0].slug);
+        const preferredFaction =
+          (selectedFactionSlug && data.factions.find((faction) => faction.slug === selectedFactionSlug)) ??
+          data.factions[17] ??
+          data.factions[0];
+
+        if (preferredFaction) {
+          const alliance = getFactionAlliance(preferredFaction.name);
+          setSelectedFactionSlug(preferredFaction.slug);
+          setSelectedAlliance(alliance);
         }
       })
       .catch((error) => {
@@ -100,6 +112,26 @@ function App() {
   }, [selectedFactionSlug]);
 
   const selectedFactionMeta = indexData?.factions.find((faction) => faction.slug === selectedFactionSlug) ?? null;
+  const factionsByAlliance = useMemo(() => {
+    const grouped: Record<Alliance, FactionMeta[]> = {
+      Xenos: [],
+      Imperium: [],
+      Chaos: [],
+    };
+
+    for (const faction of indexData?.factions ?? []) {
+      grouped[getFactionAlliance(faction.name)].push(faction);
+    }
+
+    for (const alliance of ALLIANCE_ORDER) {
+      grouped[alliance].sort((left, right) =>
+        getFactionLabel(left, alliance).localeCompare(getFactionLabel(right, alliance)),
+      );
+    }
+
+    return grouped;
+  }, [indexData]);
+  const visibleFactions = factionsByAlliance[selectedAlliance];
 
   useEffect(() => {
     if (!selectedFactionMeta || loadedFactions[selectedFactionMeta.slug]) {
@@ -128,6 +160,25 @@ function App() {
       });
     return () => controller.abort();
   }, [loadedFactions, selectedFactionMeta]);
+
+  useEffect(() => {
+    if (!selectedFactionMeta) {
+      return;
+    }
+    const alliance = getFactionAlliance(selectedFactionMeta.name);
+    if (selectedAlliance !== alliance) {
+      setSelectedAlliance(alliance);
+    }
+  }, [selectedAlliance, selectedFactionMeta]);
+
+  useEffect(() => {
+    if (!visibleFactions.length) {
+      return;
+    }
+    if (!visibleFactions.some((faction) => faction.slug === selectedFactionSlug)) {
+      setSelectedFactionSlug(visibleFactions[0].slug);
+    }
+  }, [selectedFactionSlug, visibleFactions]);
 
   useEffect(() => {
     const payload: StoredState = {
@@ -218,9 +269,28 @@ function App() {
     });
   }
 
+  function selectAlliance(alliance: Alliance) {
+    startTransition(() => {
+      setSelectedAlliance(alliance);
+
+      const availableFactions = factionsByAlliance[alliance];
+      const keepCurrentFaction = availableFactions.some((faction) => faction.slug === selectedFactionSlug);
+      const nextFactionSlug = keepCurrentFaction ? selectedFactionSlug : availableFactions[0]?.slug ?? "";
+
+      setSelectedFactionSlug(nextFactionSlug);
+      setActiveRole(ROLE_ALL);
+      setSearchTerm("");
+      setDetailTab("overview");
+    });
+  }
+
   function selectFaction(slug: string) {
+    const factionMeta = indexData?.factions.find((faction) => faction.slug === slug);
     startTransition(() => {
       setSelectedFactionSlug(slug);
+      if (factionMeta) {
+        setSelectedAlliance(getFactionAlliance(factionMeta.name));
+      }
       setActiveRole(ROLE_ALL);
       setSearchTerm("");
       setDetailTab("overview");
@@ -354,15 +424,30 @@ function App() {
           {indexError ? <MessageTone tone="error" message={indexError} /> : null}
 
           <label className="field">
+            <span>Alliance</span>
+            <select
+              value={selectedAlliance}
+              onChange={(event) => selectAlliance(event.target.value as Alliance)}
+              disabled={!indexData}
+            >
+              {ALLIANCE_ORDER.map((alliance) => (
+                <option key={alliance} value={alliance}>
+                  {alliance}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="field">
             <span>Faction</span>
             <select
               value={selectedFactionSlug}
               onChange={(event) => selectFaction(event.target.value)}
-              disabled={!indexData}
+              disabled={!visibleFactions.length}
             >
-              {indexData?.factions.map((faction) => (
+              {visibleFactions.map((faction) => (
                 <option key={faction.slug} value={faction.slug}>
-                  {faction.name}
+                  {getFactionLabel(faction, selectedAlliance)}
                 </option>
               ))}
             </select>
@@ -870,6 +955,19 @@ function formatStamp(raw: string): string {
     month: "short",
     day: "numeric",
   }).format(date);
+}
+
+function getFactionAlliance(name: string): Alliance {
+  const [prefix] = name.split(" - ", 1);
+  if (ALLIANCE_ORDER.includes(prefix as Alliance)) {
+    return prefix as Alliance;
+  }
+  return "Xenos";
+}
+
+function getFactionLabel(faction: FactionMeta, alliance: Alliance): string {
+  const prefix = `${alliance} - `;
+  return faction.name.startsWith(prefix) ? faction.name.slice(prefix.length) : faction.name;
 }
 
 function groupBy<T>(items: T[], getKey: (item: T) => string) {
