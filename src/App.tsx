@@ -31,6 +31,21 @@ import type {
 
 const STORAGE_KEY = "warhammer-army-builder.prototype";
 const ALLIANCE_ORDER = ["Xenos", "Imperium - Astartes", "Imperium - Other", "Chaos"] as const;
+const CATEGORY_ORDER = [
+  "Epic Hero",
+  "Character",
+  "Battleline",
+  "Dedicated Transport",
+  "Infantry",
+  "Mounted",
+  "Beast",
+  "Swarm",
+  "Monster",
+  "Vehicle",
+  "Fortification",
+  "Allied Units",
+  "Other",
+] as const;
 
 type Alliance = (typeof ALLIANCE_ORDER)[number];
 
@@ -52,7 +67,7 @@ function App() {
     "overview",
   );
   const [copiedState, setCopiedState] = useState(false);
-  const [expandedSectionsByFaction, setExpandedSectionsByFaction] = useState<Record<string, Record<string, boolean>>>({});
+  const [openSectionByFaction, setOpenSectionByFaction] = useState<Record<string, string | null>>({});
 
   const [draftsByFaction, setDraftsByFaction] = useState<Record<string, { updatedAt: string; items: RosterItem[] }>>(
     {},
@@ -227,7 +242,7 @@ function App() {
         title,
         units: sectionUnits.sort((left, right) => left.name.localeCompare(right.name)),
       }))
-      .sort((left, right) => left.title.localeCompare(right.title));
+      .sort((left, right) => compareCategoryTitle(left.title, right.title));
   }, [filteredUnits]);
 
   const selectedUnitId = selectedFactionSlug ? selectedUnitIdByFaction[selectedFactionSlug] : undefined;
@@ -246,24 +261,6 @@ function App() {
     }
   }, [filteredUnits, selectedFactionSlug, selectedUnitIdByFaction]);
 
-  useEffect(() => {
-    if (!selectedFactionSlug || !unitSections.length) {
-      return;
-    }
-    setExpandedSectionsByFaction((current) => {
-      if (current[selectedFactionSlug]) {
-        return current;
-      }
-      const initialSections = Object.fromEntries(
-        unitSections.map((section, index) => [section.title, index === 0]),
-      );
-      return {
-        ...current,
-        [selectedFactionSlug]: initialSections,
-      };
-    });
-  }, [selectedFactionSlug, unitSections]);
-
   const selectedUnit =
     filteredUnits.find((unit) => unit.id === selectedUnitId) ??
     units.find((unit) => unit.id === selectedUnitId) ??
@@ -272,9 +269,49 @@ function App() {
     null;
   const datasheetUnit = datasheetUnitId ? units.find((unit) => unit.id === datasheetUnitId) ?? null : null;
 
+  useEffect(() => {
+    if (!selectedFactionSlug || !unitSections.length) {
+      return;
+    }
+    const selectedSectionTitle =
+      selectedUnit?.summary.primaryCategory && unitSections.some((section) => section.title === selectedUnit.summary.primaryCategory)
+        ? selectedUnit.summary.primaryCategory
+        : null;
+    const defaultSection = selectedSectionTitle ?? unitSections[0]?.title ?? null;
+
+    setOpenSectionByFaction((current) => {
+      const currentOpenSection = current[selectedFactionSlug];
+      const openSectionStillExists =
+        currentOpenSection !== undefined && unitSections.some((section) => section.title === currentOpenSection);
+      const shouldFollowSelection = deferredSearch.trim().length > 0;
+      const nextOpenSection =
+        shouldFollowSelection || !openSectionStillExists ? defaultSection : currentOpenSection;
+
+      if (currentOpenSection === nextOpenSection) {
+        return current;
+      }
+
+      return {
+        ...current,
+        [selectedFactionSlug]: nextOpenSection,
+      };
+    });
+  }, [deferredSearch, selectedFactionSlug, selectedUnit, unitSections]);
+
   const currentDraft = draftsByFaction[selectedFactionSlug]?.items ?? [];
   const totalPoints = currentDraft.reduce((sum, item) => sum + item.points * item.count, 0);
   const totalSelections = currentDraft.reduce((sum, item) => sum + item.count, 0);
+  const armySections = useMemo(() => {
+    const grouped = groupBy(currentDraft, (item) => item.primaryCategory ?? "Other");
+    return Object.entries(grouped)
+      .map(([title, items]) => ({
+        title,
+        items: items.slice().sort((left, right) => left.name.localeCompare(right.name)),
+        totalCount: items.reduce((sum, item) => sum + item.count, 0),
+        totalPoints: items.reduce((sum, item) => sum + item.points * item.count, 0),
+      }))
+      .sort((left, right) => compareCategoryTitle(left.title, right.title));
+  }, [currentDraft]);
 
   useEffect(() => {
     if (datasheetUnitId && !units.some((unit) => unit.id === datasheetUnitId)) {
@@ -348,14 +385,11 @@ function App() {
     if (!selectedFactionSlug) {
       return;
     }
-    setExpandedSectionsByFaction((current) => {
-      const factionSections = current[selectedFactionSlug] ?? {};
+    setOpenSectionByFaction((current) => {
+      const currentOpenSection = current[selectedFactionSlug] ?? null;
       return {
         ...current,
-        [selectedFactionSlug]: {
-          ...factionSections,
-          [sectionTitle]: !factionSections[sectionTitle],
-        },
+        [selectedFactionSlug]: currentOpenSection === sectionTitle ? null : sectionTitle,
       };
     });
   }
@@ -376,6 +410,21 @@ function App() {
     setSelectedUnitIdByFaction((current) => ({
       ...current,
       [selectedFactionSlug]: unitId,
+    }));
+  }
+
+  function focusArmyUnit(unitId: string) {
+    const targetUnit = units.find((unit) => unit.id === unitId);
+    if (!selectedFactionSlug || !targetUnit) {
+      return;
+    }
+
+    setSearchTerm("");
+    selectUnit(unitId);
+    setDetailTab("overview");
+    setOpenSectionByFaction((current) => ({
+      ...current,
+      [selectedFactionSlug]: targetUnit.summary.primaryCategory ?? "Other",
     }));
   }
 
@@ -567,10 +616,7 @@ function App() {
           <div className="library-grid">
             <div className="unit-list">
               {unitSections.map((section) => {
-                const isExpanded =
-                  deferredSearch.trim().length > 0 ||
-                  expandedSectionsByFaction[selectedFactionSlug]?.[section.title] === true ||
-                  section.units.some((unit) => unit.id === selectedUnit?.id);
+                const isExpanded = openSectionByFaction[selectedFactionSlug] === section.title;
 
                 return (
                   <section key={section.title} className="unit-section">
@@ -578,6 +624,7 @@ function App() {
                       className={isExpanded ? "unit-section-toggle expanded" : "unit-section-toggle"}
                       type="button"
                       onClick={() => toggleSection(section.title)}
+                      aria-expanded={isExpanded}
                     >
                       <span className="unit-section-label">
                         <ChevronRight size={16} />
@@ -704,23 +751,46 @@ function App() {
 
         <section className="workspace-pane roster-pane">
           <div className="pane-head">
-            <h2>Roster</h2>
+            <h2>Army</h2>
             <span>{totalPoints} pts</span>
           </div>
 
-          <div className="roster-summary">
-            <div>
-              <span>Total points</span>
-              <strong>{totalPoints}</strong>
+          <div className="army-sheet">
+            <div className="army-sheet-header">
+              <div className="army-sheet-title">
+                <p className="eyebrow">Current Army</p>
+                <h3>{selectedFactionMeta ? getFactionLabel(selectedFactionMeta) : "No faction selected"}</h3>
+                <p className="army-sheet-subtitle">{selectedFactionMeta?.name ?? "Pick a faction to start a list."}</p>
+              </div>
+
+              <div className="roster-summary">
+                <div>
+                  <span>Total points</span>
+                  <strong>{totalPoints}</strong>
+                </div>
+                <div>
+                  <span>Selections</span>
+                  <strong>{totalSelections}</strong>
+                </div>
+                <div>
+                  <span>Sections</span>
+                  <strong>{armySections.length}</strong>
+                </div>
+              </div>
             </div>
-            <div>
-              <span>Selections</span>
-              <strong>{totalSelections}</strong>
-            </div>
-            <div>
-              <span>Faction</span>
-              <strong>{selectedFactionMeta?.name ?? "None"}</strong>
-            </div>
+
+            {armySections.length > 0 ? (
+              <div className="army-section-strip">
+                {armySections.map((section) => (
+                  <div key={section.title} className="army-section-chip">
+                    <strong>{section.title}</strong>
+                    <span>
+                      {section.totalCount} | {section.totalPoints} pts
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <div className="toolbar-row">
@@ -744,51 +814,76 @@ function App() {
           </div>
 
           <div className="roster-list">
-            {currentDraft.map((item) => (
-              <article key={item.unitId} className="roster-item">
-                <div className="roster-item-top">
+            {armySections.map((section) => (
+              <section key={section.title} className="army-group">
+                <div className="army-group-head">
                   <div>
-                    <h3>{item.name}</h3>
-                    <p>{item.primaryCategory ?? "Selection"}</p>
+                    <h3>{section.title}</h3>
+                    <p>{section.totalCount} selections</p>
                   </div>
-                  <strong>{item.points * item.count} pts</strong>
+                  <strong>{section.totalPoints} pts</strong>
                 </div>
 
-                <div className="count-row">
-                  <button
-                    className="icon-button"
-                    type="button"
-                    title={`Decrease ${item.name}`}
-                    onClick={() => adjustItemCount(item.unitId, item.count - 1)}
-                  >
-                    <Minus size={16} />
-                  </button>
-                  <span>{item.count}</span>
-                  <button
-                    className="icon-button"
-                    type="button"
-                    title={`Increase ${item.name}`}
-                    onClick={() => adjustItemCount(item.unitId, item.count + 1)}
-                  >
-                    <Plus size={16} />
-                  </button>
-                  <button
-                    className="icon-button danger"
-                    type="button"
-                    title={`Remove ${item.name}`}
-                    onClick={() => adjustItemCount(item.unitId, 0)}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
+                <div className="army-group-items">
+                  {section.items.map((item) => (
+                    <article key={item.unitId} className="roster-item">
+                      <div className="roster-item-top">
+                        <div>
+                          <h3>{item.name}</h3>
+                          <div className="roster-item-meta">
+                            <span>{item.count}x in list</span>
+                            <span>{item.points} pts each</span>
+                          </div>
+                        </div>
+                        <strong>{item.points * item.count} pts</strong>
+                      </div>
 
-                <input
-                  className="note-field"
-                  value={item.note}
-                  onChange={(event) => updateItemNote(item.unitId, event.target.value)}
-                  placeholder="Optional note, wargear idea, role"
-                />
-              </article>
+                      <div className="count-row">
+                        <button
+                          className="secondary-button compact-button"
+                          type="button"
+                          onClick={() => focusArmyUnit(item.unitId)}
+                        >
+                          <Crosshair size={14} />
+                          Inspect
+                        </button>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          title={`Decrease ${item.name}`}
+                          onClick={() => adjustItemCount(item.unitId, item.count - 1)}
+                        >
+                          <Minus size={16} />
+                        </button>
+                        <span>{item.count}</span>
+                        <button
+                          className="icon-button"
+                          type="button"
+                          title={`Increase ${item.name}`}
+                          onClick={() => adjustItemCount(item.unitId, item.count + 1)}
+                        >
+                          <Plus size={16} />
+                        </button>
+                        <button
+                          className="icon-button danger"
+                          type="button"
+                          title={`Remove ${item.name}`}
+                          onClick={() => adjustItemCount(item.unitId, 0)}
+                        >
+                          <Trash2 size={16} />
+                        </button>
+                      </div>
+
+                      <input
+                        className="note-field"
+                        value={item.note}
+                        onChange={(event) => updateItemNote(item.unitId, event.target.value)}
+                        placeholder="Optional note, wargear idea, role"
+                      />
+                    </article>
+                  ))}
+                </div>
+              </section>
             ))}
 
             {currentDraft.length === 0 ? (
@@ -1231,6 +1326,22 @@ function getFactionLabel(faction: FactionMeta): string {
     return faction.name.slice("Xenos - ".length);
   }
   return faction.name;
+}
+
+function compareCategoryTitle(left: string, right: string): number {
+  const leftIndex = CATEGORY_ORDER.indexOf(left as (typeof CATEGORY_ORDER)[number]);
+  const rightIndex = CATEGORY_ORDER.indexOf(right as (typeof CATEGORY_ORDER)[number]);
+
+  if (leftIndex === -1 && rightIndex === -1) {
+    return left.localeCompare(right);
+  }
+  if (leftIndex === -1) {
+    return 1;
+  }
+  if (rightIndex === -1) {
+    return -1;
+  }
+  return leftIndex - rightIndex;
 }
 
 function groupBy<T>(items: T[], getKey: (item: T) => string) {

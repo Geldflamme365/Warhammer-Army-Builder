@@ -304,6 +304,10 @@ select,
   text-align: left;
 }
 
+.unit-section-toggle:hover {
+  background: #ffffff;
+}
+
 .unit-section-toggle.expanded {
   border-bottom-color: var(--line);
 }
@@ -482,6 +486,12 @@ select,
 .primary-button,
 .secondary-button {
   padding: 0 14px;
+}
+
+.compact-button {
+  min-height: 32px;
+  padding: 0 10px;
+  font-size: 0.8rem;
 }
 
 .detail-pane {
@@ -704,7 +714,6 @@ select,
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-bottom: 12px;
 }
 
 .roster-summary div {
@@ -725,19 +734,113 @@ select,
   margin-bottom: 12px;
 }
 
+.army-sheet {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.army-sheet-header {
+  display: grid;
+  gap: 10px;
+}
+
+.army-sheet-title h3,
+.army-group-head h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.army-sheet-subtitle {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.army-section-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.army-section-chip,
+.roster-item-meta span {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.army-section-chip strong {
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.army-section-chip span,
+.roster-item-meta span {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
 .roster-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
   align-content: start;
 }
 
+.army-group {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.army-group-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--line);
+}
+
+.army-group-head p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.army-group-items {
+  display: grid;
+  gap: 8px;
+}
+
 .roster-item {
+  display: grid;
+  gap: 8px;
   padding: 12px;
+}
+
+.roster-item-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
 }
 
 .count-row {
   justify-content: flex-start;
   margin: 12px 0 8px;
+  flex-wrap: wrap;
 }
 
 .count-row span {
@@ -911,6 +1014,10 @@ select,
 
   .roster-summary {
     grid-template-columns: 1fr;
+  }
+
+  .army-group-head {
+    flex-direction: column;
   }
 
   .toolbar-row {
