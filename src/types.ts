@@ -16,6 +16,8 @@ export type FactionMeta = {
   sourceFile: string;
   slug: string;
   unitCount: number;
+  detachmentCount?: number;
+  stratagemCount?: number;
   path: string;
 };
 
@@ -104,6 +106,33 @@ export type UnitRecord = {
   options: TreeNode[];
 };
 
+export type DetachmentRecord = {
+  id: string;
+  name: string;
+  sourceDocument?: string;
+  sortIndex?: number | string | null;
+  rules: Rule[];
+  profiles: Profile[];
+  constraints: Constraint[];
+  modifiers: Modifier[];
+};
+
+export type StratagemRecord = {
+  id: string;
+  name: string;
+  detachmentId?: string;
+  detachmentName?: string;
+  sourceDocument?: string;
+  cp?: string;
+  phase?: string;
+  type?: string;
+  when?: string;
+  target?: string;
+  effect?: string;
+  restrictions?: string;
+  description?: string;
+};
+
 export type FactionData = {
   catalogue: {
     id: string;
@@ -112,6 +141,8 @@ export type FactionData = {
     sourceFile: string;
   };
   units: UnitRecord[];
+  detachments?: DetachmentRecord[];
+  stratagems?: StratagemRecord[];
 };
 
 export type RosterItem = {
@@ -133,6 +164,8 @@ export type StoredArmy = {
   id: string;
   name: string;
   factionSlug: string;
+  detachmentId?: string;
+  detachmentName?: string;
   createdAt: string;
   updatedAt: string;
   items: RosterItem[];

@@ -239,11 +239,11 @@ def rule_to_json(node: NodeInfo, include_description: bool) -> Dict[str, Any]:
     return data
 
 
-def extract_profiles(element: ET.Element) -> List[Dict[str, Any]]:
+def extract_profiles(element: ET.Element, keep_types: Optional[Set[str]] = PROFILE_TYPES_TO_KEEP) -> List[Dict[str, Any]]:
     profiles: List[Dict[str, Any]] = []
     for profile in get_direct_children(element, "profiles", "profile"):
         profile_type = clean_text(profile.attrib.get("typeName"))
-        if profile_type and profile_type not in PROFILE_TYPES_TO_KEEP:
+        if keep_types is not None and profile_type and profile_type not in keep_types:
             continue
         profiles.append(
             {
@@ -402,6 +402,14 @@ def is_meta_name(name: str) -> bool:
     if not lowered:
         return False
     return lowered in META_NAMES or lowered.startswith("show ")
+
+
+def is_detachment_name(name: str) -> bool:
+    return clean_text(name).lower() in {"detachment", "detachments"}
+
+
+def is_stratagem_name(name: str) -> bool:
+    return "stratagem" in clean_text(name).lower()
 
 
 def should_follow_entry_link(link: ET.Element) -> bool:
@@ -887,6 +895,146 @@ def collect_root_entries(
     return root_entries
 
 
+def dedupe_records(items: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    seen: Set[Tuple[str, str]] = set()
+    unique: List[Dict[str, Any]] = []
+    for item in items:
+        key = (clean_text(item.get("id")), clean_text(item.get("name")))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(item)
+    return unique
+
+
+def sort_index_value(element: ET.Element) -> Any:
+    return coerce_scalar(element.attrib.get("sortIndex"))
+
+
+def sort_record_key(item: Dict[str, Any]) -> Tuple[int, str]:
+    sort_index = item.get("sortIndex")
+    if isinstance(sort_index, (int, float)):
+        return (int(sort_index), clean_text(item.get("name")).lower())
+    return (9999, clean_text(item.get("name")).lower())
+
+
+def resolve_group_link(link: ET.Element, index: Index) -> Optional[NodeInfo]:
+    if link.attrib.get("type") != "selectionEntryGroup":
+        return None
+    target_id = link.attrib.get("targetId")
+    if not target_id:
+        return None
+    return index.selection_entry_groups.get(target_id)
+
+
+def collect_detachment_groups(entry: NodeInfo, index: Index) -> List[NodeInfo]:
+    groups: List[NodeInfo] = []
+    element = entry.element
+    for group in get_direct_children(element, "selectionEntryGroups", "selectionEntryGroup"):
+        if is_detachment_name(clean_text(group.attrib.get("name"))):
+            groups.append(NodeInfo(entry.document, group))
+    for link in get_direct_children(element, "entryLinks", "entryLink"):
+        link_name = clean_text(link.attrib.get("name"))
+        if not is_detachment_name(link_name):
+            continue
+        target = resolve_group_link(link, index)
+        if target is not None:
+            groups.append(target)
+    return groups
+
+
+def collect_detachment_choices(group: NodeInfo, index: Index) -> List[NodeInfo]:
+    choices: List[NodeInfo] = []
+    element = group.element
+    for entry in get_direct_children(element, "selectionEntries", "selectionEntry"):
+        choices.append(NodeInfo(group.document, entry))
+    for link in get_direct_children(element, "entryLinks", "entryLink"):
+        if link.attrib.get("type") != "selectionEntry":
+            continue
+        target = resolve_link_target(link, index)
+        if target is not None:
+            choices.append(target)
+    return choices
+
+
+def build_detachment_record(entry: NodeInfo, index: Index) -> Dict[str, Any]:
+    element = entry.element
+    record: Dict[str, Any] = {
+        "id": element.attrib.get("id"),
+        "name": clean_text(element.attrib.get("name")),
+        "sourceDocument": entry.document.name,
+        "rules": dedupe_records([*extract_direct_rules(element), *build_linked_rules(element, index)]),
+        "profiles": dedupe_records([*extract_profiles(element, keep_types=None), *build_linked_profiles(element, index)]),
+        "constraints": extract_constraints(element),
+        "modifiers": extract_modifiers(element),
+    }
+    sort_index = sort_index_value(element)
+    if sort_index not in (None, ""):
+        record["sortIndex"] = sort_index
+    return record
+
+
+def extract_detachments(document: DocumentInfo, index: Index) -> List[Dict[str, Any]]:
+    detachments: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str]] = set()
+    for root_link, entry in collect_root_entries(document, index):
+        display_name = clean_text(root_link.attrib.get("name")) if root_link is not None else clean_text(entry.element.attrib.get("name"))
+        if not is_detachment_name(display_name):
+            continue
+        for group in collect_detachment_groups(entry, index):
+            for choice in collect_detachment_choices(group, index):
+                record = build_detachment_record(choice, index)
+                key = (clean_text(record.get("id")), clean_text(record.get("name")))
+                if key in seen:
+                    continue
+                seen.add(key)
+                detachments.append(record)
+    detachments.sort(key=sort_record_key)
+    return detachments
+
+
+def build_stratagem_record(node: NodeInfo) -> Dict[str, Any]:
+    element = node.element
+    record: Dict[str, Any] = {
+        "id": element.attrib.get("id"),
+        "name": clean_text(element.attrib.get("name")),
+        "sourceDocument": node.document.name,
+    }
+    description = get_text(element, "description")
+    if description:
+        record["description"] = description
+    sort_index = sort_index_value(element)
+    if sort_index not in (None, ""):
+        record["sortIndex"] = sort_index
+    return record
+
+
+def extract_stratagems(document: DocumentInfo, index: Index) -> List[Dict[str, Any]]:
+    # The current BSData cache normally does not ship full stratagem card data.
+    # This scan keeps the export forward-compatible if that data appears later.
+    stratagems: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str]] = set()
+    for _, entry in collect_root_entries(document, index):
+        candidates = [entry]
+        for child in get_direct_children(entry.element, "selectionEntries", "selectionEntry"):
+            candidates.append(NodeInfo(entry.document, child))
+        for group in get_direct_children(entry.element, "selectionEntryGroups", "selectionEntryGroup"):
+            if is_stratagem_name(group.attrib.get("name")):
+                for child in get_direct_children(group, "selectionEntries", "selectionEntry"):
+                    candidates.append(NodeInfo(entry.document, child))
+        for candidate in candidates:
+            if not is_stratagem_name(candidate.element.attrib.get("name")):
+                continue
+            record = build_stratagem_record(candidate)
+            key = (clean_text(record.get("id")), clean_text(record.get("name")))
+            if key in seen:
+                continue
+            seen.add(key)
+            stratagems.append(record)
+    stratagems.sort(key=sort_record_key)
+    return stratagems
+
+
 def get_repo_commit(source_dir: Path) -> str:
     try:
         result = subprocess.run(
@@ -952,6 +1100,8 @@ def export_catalogue(document: DocumentInfo, index: Index) -> Dict[str, Any]:
         units.append(unit)
 
     units.sort(key=lambda item: item["name"])
+    detachments = extract_detachments(document, index)
+    stratagems = extract_stratagems(document, index)
     return {
         "catalogue": {
             "id": document.document_id,
@@ -960,6 +1110,8 @@ def export_catalogue(document: DocumentInfo, index: Index) -> Dict[str, Any]:
             "sourceFile": document.path.name,
         },
         "units": units,
+        "detachments": detachments,
+        "stratagems": stratagems,
     }
 
 
@@ -976,6 +1128,8 @@ def build_index_file(faction_exports: List[Dict[str, Any]], source_commit: str, 
                 "sourceFile": catalogue["sourceFile"],
                 "slug": slug,
                 "unitCount": len(export["units"]),
+                "detachmentCount": len(export.get("detachments", [])),
+                "stratagemCount": len(export.get("stratagems", [])),
                 "path": f"factions/{slug}.json",
             }
         )

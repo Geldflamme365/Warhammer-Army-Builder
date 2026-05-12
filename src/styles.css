@@ -900,6 +900,10 @@ select,
   gap: 10px;
 }
 
+.army-detachment-field {
+  margin-bottom: 0;
+}
+
 .army-sheet-title h3,
 .army-group-head h3 {
   margin: 0;
@@ -938,6 +942,67 @@ select,
 .roster-item-meta span {
   color: var(--muted);
   font-size: 0.74rem;
+}
+
+.rules-panel {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #ffffff;
+}
+
+.rules-stack,
+.stratagem-list {
+  display: grid;
+  gap: 10px;
+}
+
+.rules-stack h4,
+.stratagem-card h4 {
+  margin: 0;
+  font-size: 0.94rem;
+  font-weight: 600;
+}
+
+.stratagem-section-head {
+  margin-top: 4px;
+}
+
+.stratagem-section-head span {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.stratagem-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.stratagem-card-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.stratagem-card-head span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.stratagem-card p {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.86rem;
 }
 
 .roster-list {

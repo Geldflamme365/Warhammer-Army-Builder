@@ -1,5 +1,6 @@
 import {
   ArrowLeft,
+  BookOpen,
   Check,
   ChevronRight,
   Copy,
@@ -12,6 +13,7 @@ import {
   Plus,
   Search,
   Shield,
+  ScrollText,
   Swords,
   Trash2,
   X,
@@ -21,6 +23,7 @@ import { loadCatalogueIndex, loadFactionCatalogue } from "./data";
 import type {
   CatalogueIndex,
   Constraint,
+  DetachmentRecord,
   FactionMeta,
   FactionData,
   Modifier,
@@ -28,6 +31,7 @@ import type {
   RosterItem,
   StoredArmy,
   StoredState,
+  StratagemRecord,
   TreeNode,
   UnitRecord,
 } from "./types";
@@ -49,6 +53,8 @@ const CATEGORY_ORDER = [
   "Allied Units",
   "Other",
 ] as const;
+const EMPTY_DETACHMENTS: DetachmentRecord[] = [];
+const EMPTY_STRATAGEMS: StratagemRecord[] = [];
 
 type Alliance = (typeof ALLIANCE_ORDER)[number];
 type AppView = "home" | "setup" | "builder";
@@ -65,6 +71,7 @@ function App() {
   const [view, setView] = useState<AppView>("home");
   const [setupAlliance, setSetupAlliance] = useState<Alliance>("Xenos");
   const [setupFactionSlug, setSetupFactionSlug] = useState<string>("");
+  const [setupDetachmentId, setSetupDetachmentId] = useState<string>("");
   const [setupArmyName, setSetupArmyName] = useState("");
   const [armies, setArmies] = useState<StoredArmy[]>([]);
   const [activeArmyId, setActiveArmyId] = useState<string | null>(null);
@@ -202,8 +209,49 @@ function App() {
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
   }, [activeArmyId, armies, selectedUnitIdByArmy]);
 
+  const setupFaction = setupFactionMeta ? loadedFactions[setupFactionMeta.slug] : undefined;
+  const setupDetachments = setupFaction?.detachments ?? EMPTY_DETACHMENTS;
   const activeFaction = selectedFactionMeta ? loadedFactions[selectedFactionMeta.slug] : undefined;
   const units = activeFaction?.units ?? [];
+  const activeDetachments = activeFaction?.detachments ?? EMPTY_DETACHMENTS;
+  const activeStratagems = activeFaction?.stratagems ?? EMPTY_STRATAGEMS;
+  const activeDetachment = activeArmy ? resolveArmyDetachment(activeArmy, activeDetachments) : null;
+  const activeDetachmentStratagems = getDetachmentStratagems(activeStratagems, activeDetachment);
+
+  useEffect(() => {
+    if (screen !== "setup") {
+      return;
+    }
+    if (setupDetachments.length === 0) {
+      if (setupDetachmentId) {
+        setSetupDetachmentId("");
+      }
+      return;
+    }
+    if (!setupDetachments.some((detachment) => detachment.id === setupDetachmentId)) {
+      setSetupDetachmentId(setupDetachments[0].id);
+    }
+  }, [screen, setupDetachmentId, setupDetachments]);
+
+  useEffect(() => {
+    if (screen !== "builder" || !activeArmy || activeDetachments.length === 0 || !activeDetachment) {
+      return;
+    }
+    if (activeArmy.detachmentId === activeDetachment.id && activeArmy.detachmentName === activeDetachment.name) {
+      return;
+    }
+    setArmies((current) =>
+      current.map((army) =>
+        army.id === activeArmy.id
+          ? {
+              ...army,
+              detachmentId: activeDetachment.id,
+              detachmentName: activeDetachment.name,
+            }
+          : army,
+      ),
+    );
+  }, [activeArmy, activeDetachment, activeDetachments.length, screen]);
 
   const filteredUnits = useMemo(() => {
     const query = deferredSearch.trim().toLowerCase();
@@ -361,6 +409,7 @@ function App() {
   function beginNewArmy() {
     setView("setup");
     setSetupArmyName("");
+    setSetupDetachmentId("");
     setDatasheetUnitId(null);
     setSearchTerm("");
     setDetailTab("overview");
@@ -425,6 +474,9 @@ function App() {
       const nextFactionSlug = keepCurrentFaction ? setupFactionSlug : availableFactions[0]?.slug ?? "";
 
       setSetupFactionSlug(nextFactionSlug);
+      if (!keepCurrentFaction) {
+        setSetupDetachmentId("");
+      }
     });
   }
 
@@ -432,6 +484,7 @@ function App() {
     const factionMeta = indexData?.factions.find((faction) => faction.slug === slug);
     startTransition(() => {
       setSetupFactionSlug(slug);
+      setSetupDetachmentId("");
       if (factionMeta) {
         setSetupAlliance(getFactionAlliance(factionMeta.name));
       }
@@ -458,10 +511,14 @@ function App() {
     const now = new Date().toISOString();
     const armyId = createArmyId();
     const name = setupArmyName.trim() || buildArmyName(setupFactionMeta, armies);
+    const detachment =
+      setupDetachments.find((candidate) => candidate.id === setupDetachmentId) ?? setupDetachments[0] ?? null;
     const army: StoredArmy = {
       id: armyId,
       name,
       factionSlug: setupFactionMeta.slug,
+      detachmentId: detachment?.id,
+      detachmentName: detachment?.name,
       createdAt: now,
       updatedAt: now,
       items: [],
@@ -475,6 +532,7 @@ function App() {
     setSearchTerm("");
     setDetailTab("overview");
     setSetupArmyName("");
+    setSetupDetachmentId("");
   }
 
   function openDatasheet(unit: UnitRecord) {
@@ -494,6 +552,25 @@ function App() {
       ...current,
       [activeArmyId]: unitId,
     }));
+  }
+
+  function selectDetachment(detachmentId: string) {
+    if (!activeArmyId) {
+      return;
+    }
+    const detachment = activeDetachments.find((candidate) => candidate.id === detachmentId);
+    setArmies((current) =>
+      current.map((army) =>
+        army.id === activeArmyId
+          ? {
+              ...army,
+              detachmentId: detachment?.id,
+              detachmentName: detachment?.name,
+              updatedAt: new Date().toISOString(),
+            }
+          : army,
+      ),
+    );
   }
 
   function focusArmyUnit(unitId: string) {
@@ -561,10 +638,14 @@ function App() {
     if (!activeArmy || currentDraft.length === 0) {
       return;
     }
-    const lines = [
+    const headerLines = [
       activeArmy.name,
       selectedFactionMeta?.name ?? formatSlugLabel(activeArmy.factionSlug),
+      activeDetachment ? `Detachment: ${activeDetachment.name}` : "",
       `${totalPoints} pts | ${totalSelections} selections`,
+    ].filter((line) => line !== "");
+    const lines = [
+      ...headerLines,
       "",
       ...currentDraft.map((item) => {
         const note = item.note.trim() ? ` - ${item.note.trim()}` : "";
@@ -586,6 +667,12 @@ function App() {
         name: activeArmy.name,
         factionSlug: activeArmy.factionSlug,
         factionName: selectedFactionMeta?.name ?? formatSlugLabel(activeArmy.factionSlug),
+        detachment: activeDetachment
+          ? {
+              id: activeDetachment.id,
+              name: activeDetachment.name,
+            }
+          : null,
         createdAt: activeArmy.createdAt,
         updatedAt: activeArmy.updatedAt,
       },
@@ -766,6 +853,25 @@ function App() {
                   </select>
                 </label>
 
+                <label className="field">
+                  <span>Detachment</span>
+                  <select
+                    value={setupDetachmentId}
+                    onChange={(event) => setSetupDetachmentId(event.target.value)}
+                    disabled={!setupDetachments.length}
+                  >
+                    {setupDetachments.length ? (
+                      setupDetachments.map((detachment) => (
+                        <option key={detachment.id} value={detachment.id}>
+                          {detachment.name}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">No detachment data found</option>
+                    )}
+                  </select>
+                </label>
+
                 <div className="setup-actions">
                   <button className="secondary-button" type="button" onClick={returnHome}>
                     <ArrowLeft size={16} />
@@ -795,6 +901,14 @@ function App() {
                   <div>
                     <span>Indexed units</span>
                     <strong>{setupFactionMeta.unitCount}</strong>
+                  </div>
+                  <div>
+                    <span>Detachments</span>
+                    <strong>{setupFactionMeta.detachmentCount ?? setupDetachments.length}</strong>
+                  </div>
+                  <div>
+                    <span>Stratagem records</span>
+                    <strong>{setupFactionMeta.stratagemCount ?? setupFaction?.stratagems?.length ?? 0}</strong>
                   </div>
                 </div>
               ) : null}
@@ -844,6 +958,7 @@ function App() {
                 <div className="detail-tags">
                   <span>{getFactionLabel(selectedFactionMeta)}</span>
                   <span>{selectedFactionMeta.unitCount} indexed units</span>
+                  <span>{selectedFactionMeta.detachmentCount ?? activeDetachments.length} detachments</span>
                   <span>Rev. {selectedFactionMeta.revision}</span>
                 </div>
               ) : null}
@@ -1007,6 +1122,22 @@ function App() {
                   </p>
                 </div>
 
+                {activeDetachments.length > 0 ? (
+                  <label className="field army-detachment-field">
+                    <span>Detachment</span>
+                    <select
+                      value={activeDetachment?.id ?? ""}
+                      onChange={(event) => selectDetachment(event.target.value)}
+                    >
+                      {activeDetachments.map((detachment) => (
+                        <option key={detachment.id} value={detachment.id}>
+                          {detachment.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                ) : null}
+
                 <div className="roster-summary">
                   <div>
                     <span>Total points</span>
@@ -1036,6 +1167,12 @@ function App() {
                 </div>
               ) : null}
             </div>
+
+            <RulesPanel
+              detachment={activeDetachment}
+              stratagems={activeDetachmentStratagems}
+              totalStratagemCount={activeStratagems.length}
+            />
 
             <div className="toolbar-row">
               <button
@@ -1431,6 +1568,108 @@ function TreeSection({ tree }: { tree: TreeNode }) {
   );
 }
 
+function RulesPanel({
+  detachment,
+  stratagems,
+  totalStratagemCount,
+}: {
+  detachment: DetachmentRecord | null;
+  stratagems: StratagemRecord[];
+  totalStratagemCount: number;
+}) {
+  return (
+    <section className="rules-panel">
+      <div className="section-head">
+        <BookOpen size={16} />
+        <h3>Detachment Rules</h3>
+      </div>
+
+      {detachment ? (
+        <div className="rules-stack">
+          <div>
+            <p className="eyebrow">Selected Detachment</p>
+            <h4>{detachment.name}</h4>
+          </div>
+
+          {detachment.rules.length > 0 ? (
+            <div className="ability-list">
+              {detachment.rules.map((rule) => (
+                <article key={rule.id ?? rule.name} className="ability-row">
+                  <h4>{rule.name}</h4>
+                  <p>{rule.description ?? rule.alias ?? "No description on record."}</p>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <MessageTone tone="neutral" message="No detachment rule text was found for this detachment." />
+          )}
+
+          {detachment.profiles.length > 0 ? (
+            <div className="profile-grid">
+              {detachment.profiles.map((profile) => (
+                <ProfileCard key={`${profile.id ?? profile.name}-${profile.typeName}`} profile={profile} />
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <MessageTone tone="neutral" message="No detachment data was found for this faction." />
+      )}
+
+      <div className="section-head stratagem-section-head">
+        <ScrollText size={16} />
+        <h3>Stratagems</h3>
+        <span>{stratagems.length}</span>
+      </div>
+
+      <div className="stratagem-list">
+        {stratagems.map((stratagem) => (
+          <StratagemCard key={stratagem.id} stratagem={stratagem} />
+        ))}
+        {totalStratagemCount === 0 ? (
+          <MessageTone tone="neutral" message="No stratagem card data is present in the current BSData export." />
+        ) : null}
+        {totalStratagemCount > 0 && stratagems.length === 0 ? (
+          <MessageTone tone="neutral" message="No stratagem records are linked to the selected detachment." />
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
+function StratagemCard({ stratagem }: { stratagem: StratagemRecord }) {
+  const details = [
+    ["CP", stratagem.cp],
+    ["Phase", stratagem.phase],
+    ["Type", stratagem.type],
+    ["When", stratagem.when],
+    ["Target", stratagem.target],
+    ["Restrictions", stratagem.restrictions],
+  ].filter(([, value]) => value);
+  const body = stratagem.effect ?? stratagem.description;
+
+  return (
+    <article className="stratagem-card">
+      <div className="stratagem-card-head">
+        <h4>{stratagem.name}</h4>
+        {stratagem.detachmentName ? <span>{stratagem.detachmentName}</span> : null}
+      </div>
+
+      {details.length > 0 ? (
+        <div className="detail-tags">
+          {details.map(([label, value]) => (
+            <span key={label}>
+              {label}: {value}
+            </span>
+          ))}
+        </div>
+      ) : null}
+
+      <p>{body ?? "No description on record."}</p>
+    </article>
+  );
+}
+
 function OptionTree({ node, depth }: { node: TreeNode; depth: number }) {
   const hasChildren = Boolean(node.children?.length);
   const costs = node.costs ? Object.entries(node.costs) : [];
@@ -1526,6 +1765,36 @@ function StatusChip({ icon, label }: { icon: React.ReactNode; label: string }) {
       <span>{label}</span>
     </div>
   );
+}
+
+function resolveArmyDetachment(army: StoredArmy, detachments: DetachmentRecord[]): DetachmentRecord | null {
+  if (detachments.length === 0) {
+    return null;
+  }
+  return (
+    detachments.find((detachment) => detachment.id === army.detachmentId) ??
+    detachments.find((detachment) => detachment.name === army.detachmentName) ??
+    detachments[0]
+  );
+}
+
+function getDetachmentStratagems(
+  stratagems: StratagemRecord[],
+  detachment: DetachmentRecord | null,
+): StratagemRecord[] {
+  if (!detachment) {
+    return stratagems.filter((stratagem) => !stratagem.detachmentId && !stratagem.detachmentName);
+  }
+  const detachmentName = detachment.name.toLowerCase();
+  return stratagems.filter((stratagem) => {
+    if (!stratagem.detachmentId && !stratagem.detachmentName) {
+      return true;
+    }
+    return (
+      stratagem.detachmentId === detachment.id ||
+      stratagem.detachmentName?.toLowerCase() === detachmentName
+    );
+  });
 }
 
 function formatPoints(points: number | null): string {
