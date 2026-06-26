@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "preview": "vite preview",
+    "fetch:wahapedia": "python scripts/fetch_wahapedia.py",
     "prepare:bsdata": "python scripts/prepare_bsdata.py"
   },
   "dependencies": {
