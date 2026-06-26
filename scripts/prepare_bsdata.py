@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import copy
+import csv
 import json
 import re
 import shutil
 import subprocess
 import unicodedata
 import xml.etree.ElementTree as ET
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,12 +18,44 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 SOURCE_DIR = ROOT_DIR / ".cache" / "bsdata-wh40k-10e"
+WAHAPEDIA_DIR = ROOT_DIR / ".cache" / "wahapedia"
 OUTPUT_DIR = ROOT_DIR / "data" / "bsdata"
 FACTIONS_DIR = OUTPUT_DIR / "factions"
 GAME_SYSTEM_FILE = "Warhammer 40,000.gst"
 
 DATASET_NAME = "BSData Warhammer 40,000 10th Edition"
 DATASET_REPO = "https://github.com/BSData/wh40k-10e"
+
+# Maps a BSData faction slug to its Wahapedia faction id. Stratagems and
+# enhancements are not in the BSData 10e catalogue, so they are merged in from
+# the Wahapedia 10e export (see scripts/fetch_wahapedia.py). All Space Marine
+# chapters share the Wahapedia "SM" faction and are resolved by prefix below.
+FACTION_WAHAPEDIA_IDS = {
+    "chaos-chaos-daemons": "CD",
+    "chaos-chaos-knights": "QT",
+    "chaos-chaos-space-marines": "CSM",
+    "chaos-death-guard": "DG",
+    "chaos-emperor-s-children": "EC",
+    "chaos-thousand-sons": "TS",
+    "chaos-titanicus-traitoris": None,  # no Wahapedia counterpart
+    "chaos-world-eaters": "WE",
+    "imperium-adepta-sororitas": "AS",
+    "imperium-adeptus-custodes": "AC",
+    "imperium-adeptus-mechanicus": "AdM",
+    "imperium-adeptus-titanicus": "TL",
+    "imperium-agents-of-the-imperium": "AoI",
+    "imperium-astra-militarum": "AM",
+    "imperium-grey-knights": "GK",
+    "imperium-imperial-knights": "QI",
+    "xenos-aeldari": "AE",
+    "xenos-drukhari": "DRU",
+    "xenos-genestealer-cults": "GC",
+    "xenos-leagues-of-votann": "LoV",
+    "xenos-necrons": "NEC",
+    "xenos-orks": "ORK",
+    "xenos-t-au-empire": "TAU",
+    "xenos-tyranids": "TYR",
+}
 
 META_NAMES = {
     "configuration",
@@ -1035,6 +1069,213 @@ def extract_stratagems(document: DocumentInfo, index: Index) -> List[Dict[str, A
     return stratagems
 
 
+# --- Wahapedia merge (stratagems + enhancements) -------------------------------
+
+def norm_match(value: Optional[str]) -> str:
+    return re.sub(r"[^a-z0-9]", "", clean_text(value).lower())
+
+
+def strip_html(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    text = re.sub(r"<br\s*/?>", "\n", value, flags=re.I)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = (
+        text.replace("&nbsp;", " ")
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&#39;", "'")
+        .replace("&quot;", '"')
+    )
+    return clean_text(text)
+
+
+def parse_stratagem_sections(description: str) -> Dict[str, str]:
+    """Split a Wahapedia stratagem body into WHEN / TARGET / EFFECT / RESTRICTIONS."""
+    parts = re.split(
+        r"<b>\s*(WHEN|TARGET|EFFECT|RESTRICTIONS)\b[^<]*</b>",
+        description,
+        flags=re.I,
+    )
+    sections: Dict[str, str] = {}
+    iterator = iter(parts[1:])
+    for label, content in zip(iterator, iterator):
+        text = strip_html(content)
+        if text:
+            sections[label.upper()] = text
+    return sections
+
+
+def parse_stratagem_type(raw_type: str) -> str:
+    text = clean_text(raw_type)  # converts the en-dash separator to " - "
+    segment = text.split(" - ")[-1]
+    segment = re.sub(r"\bStratagem\b", "", segment, flags=re.I).strip()
+    return segment or text
+
+
+def build_stratagem(row: Dict[str, str], detachment_id: Optional[str], is_core: bool) -> Dict[str, Any]:
+    record: Dict[str, Any] = {
+        "id": clean_text(row.get("id")),
+        "name": clean_text(row.get("name")),
+        "type": parse_stratagem_type(row.get("type", "")),
+        "cp": clean_text(row.get("cp_cost")),
+        "phase": clean_text(row.get("phase")),
+        "turn": clean_text(row.get("turn")),
+    }
+    if detachment_id:
+        record["detachmentId"] = detachment_id
+    detachment_name = "Core" if is_core else (clean_text(row.get("detachment")) or None)
+    if detachment_name:
+        record["detachmentName"] = detachment_name
+    if is_core:
+        record["core"] = True
+    sections = parse_stratagem_sections(row.get("description") or "")
+    if sections.get("WHEN"):
+        record["when"] = sections["WHEN"]
+    if sections.get("TARGET"):
+        record["target"] = sections["TARGET"]
+    if sections.get("EFFECT"):
+        record["effect"] = sections["EFFECT"]
+    if sections.get("RESTRICTIONS"):
+        record["restrictions"] = sections["RESTRICTIONS"]
+    legend = strip_html(row.get("legend"))
+    if legend:
+        record["legend"] = legend
+    if not any(key in record for key in ("when", "target", "effect")):
+        body = strip_html(row.get("description"))
+        if body:
+            record["description"] = body
+    return record
+
+
+def build_enhancement(row: Dict[str, str], detachment_id: str) -> Dict[str, Any]:
+    return {
+        "id": clean_text(row.get("id")),
+        "name": clean_text(row.get("name")),
+        "points": coerce_scalar(row.get("cost")),
+        "detachmentId": detachment_id,
+        "detachmentName": clean_text(row.get("detachment")) or None,
+        "description": strip_html(row.get("description")),
+    }
+
+
+def load_wahapedia() -> Optional[Dict[str, Any]]:
+    if not WAHAPEDIA_DIR.exists():
+        return None
+
+    def read_csv(name: str) -> List[Dict[str, str]]:
+        path = WAHAPEDIA_DIR / name
+        if not path.exists():
+            return []
+        with open(path, encoding="utf-8-sig", newline="") as handle:
+            return [
+                {(key or "").strip(): value for key, value in row.items()}
+                for row in csv.DictReader(handle, delimiter="|")
+            ]
+
+    stratagems = read_csv("Stratagems.csv")
+    enhancements = read_csv("Enhancements.csv")
+    if not stratagems and not enhancements:
+        return None
+
+    strat_by_faction: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    core_strats: List[Dict[str, str]] = []
+    for row in stratagems:
+        faction = row.get("faction_id") or ""
+        if faction:
+            strat_by_faction[faction].append(row)
+        elif clean_text(row.get("type")).lower().startswith("core"):
+            core_strats.append(row)
+
+    enh_by_faction: Dict[str, List[Dict[str, str]]] = defaultdict(list)
+    for row in enhancements:
+        faction = row.get("faction_id") or ""
+        if faction:
+            enh_by_faction[faction].append(row)
+
+    source = None
+    source_path = WAHAPEDIA_DIR / "source.json"
+    if source_path.exists():
+        source = json.loads(source_path.read_text(encoding="utf-8"))
+
+    # Dedupe core stratagems (same card can repeat across game modes) by name.
+    seen_core: Set[str] = set()
+    unique_core: List[Dict[str, str]] = []
+    for row in core_strats:
+        key = norm_match(row.get("name"))
+        if key in seen_core:
+            continue
+        seen_core.add(key)
+        unique_core.append(row)
+
+    return {
+        "stratagems_by_faction": strat_by_faction,
+        "enhancements_by_faction": enh_by_faction,
+        "core_stratagems": unique_core,
+        "source": source,
+    }
+
+
+def resolve_wahapedia_id(slug: str) -> Optional[str]:
+    if slug.startswith("imperium-adeptus-astartes-"):
+        return "SM"
+    return FACTION_WAHAPEDIA_IDS.get(slug)
+
+
+def attach_wahapedia(export: Dict[str, Any], wahapedia: Dict[str, Any]) -> Dict[str, int]:
+    """Merge Wahapedia stratagems and enhancements into a faction export.
+
+    Stratagems are matched to the faction's detachments by normalised name;
+    detachment-specific cards that do not belong to this faction (e.g. another
+    Space Marine chapter's detachment) are skipped. Core cards are added to
+    every faction. Enhancements are appended to their matching detachment.
+    """
+    slug = slugify(export["catalogue"]["name"])
+    waha_id = resolve_wahapedia_id(slug)
+    detachments = export.get("detachments", [])
+    detachment_by_norm: Dict[str, Dict[str, Any]] = {}
+    for detachment in detachments:
+        detachment.setdefault("enhancements", [])
+        detachment_by_norm[norm_match(detachment.get("name"))] = detachment
+
+    stratagems: List[Dict[str, Any]] = []
+    seen_ids: Set[str] = set()
+    stats = {"stratagems": 0, "enhancements": 0, "unmatchedStratagems": 0, "unmatchedEnhancements": 0}
+
+    for row in wahapedia.get("core_stratagems", []):
+        record = build_stratagem(row, None, is_core=True)
+        if record["id"] in seen_ids:
+            continue
+        seen_ids.add(record["id"])
+        stratagems.append(record)
+
+    if waha_id:
+        for row in wahapedia["stratagems_by_faction"].get(waha_id, []):
+            detachment_name = row.get("detachment") or ""
+            detachment = detachment_by_norm.get(norm_match(detachment_name)) if detachment_name else None
+            if detachment_name and detachment is None:
+                stats["unmatchedStratagems"] += 1
+                continue  # belongs to a detachment this faction does not have
+            record = build_stratagem(row, detachment["id"] if detachment else None, is_core=False)
+            if record["id"] in seen_ids:
+                continue
+            seen_ids.add(record["id"])
+            stratagems.append(record)
+
+        for row in wahapedia["enhancements_by_faction"].get(waha_id, []):
+            detachment = detachment_by_norm.get(norm_match(row.get("detachment")))
+            if detachment is None:
+                stats["unmatchedEnhancements"] += 1
+                continue
+            detachment["enhancements"].append(build_enhancement(row, detachment["id"]))
+            stats["enhancements"] += 1
+
+    export["stratagems"] = stratagems
+    stats["stratagems"] = len(stratagems)
+    return stats
+
+
 def get_repo_commit(source_dir: Path) -> str:
     try:
         result = subprocess.run(
@@ -1066,6 +1307,35 @@ def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=True, separators=(",", ":")), encoding="utf-8")
 
 
+def extract_leads(abilities: List[Dict[str, Any]]) -> List[str]:
+    """Parse the units a Leader can be attached to from its ability text.
+
+    The "Leader" ability description lists Bodyguard units either inline
+    ("...the following unit: Plague Marines") or as a bullet list. Returns the
+    clean unit names (matchable against other datasheet names).
+    """
+    for ability in abilities:
+        if clean_text(ability.get("name")) != "Leader":
+            continue
+        description = ability.get("characteristics", {}).get("Description", "")
+        match = re.search(
+            r"following unit[s]?:\s*(.*?)(?:\n\s*\*|\n\n|$)",
+            description,
+            re.S | re.I,
+        )
+        if not match:
+            continue
+        names: List[str] = []
+        seen: Set[str] = set()
+        for line in match.group(1).splitlines():
+            name = line.strip().lstrip("-").strip()
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
+        return names
+    return []
+
+
 def export_catalogue(document: DocumentInfo, index: Index) -> Dict[str, Any]:
     units: List[Dict[str, Any]] = []
     seen_keys: Set[Tuple[str, str]] = set()
@@ -1093,6 +1363,12 @@ def export_catalogue(document: DocumentInfo, index: Index) -> Dict[str, Any]:
         unit["options"] = build_options(entry, index)
         if not is_datasheet_export(unit):
             continue
+        categories = unit["summary"].get("categories", [])
+        unit["isCharacter"] = any(clean_text(c) == "Character" for c in categories)
+        unit["isEpicHero"] = any(clean_text(c) == "Epic Hero" for c in categories)
+        leads = extract_leads(unit["summary"].get("abilities", []))
+        if leads:
+            unit["leads"] = leads
         unit_key = (unit["name"], unit["id"])
         if unit_key in seen_keys:
             continue
@@ -1115,11 +1391,19 @@ def export_catalogue(document: DocumentInfo, index: Index) -> Dict[str, Any]:
     }
 
 
-def build_index_file(faction_exports: List[Dict[str, Any]], source_commit: str, source_timestamp: str) -> Dict[str, Any]:
+def build_index_file(
+    faction_exports: List[Dict[str, Any]],
+    source_commit: str,
+    source_timestamp: str,
+    wahapedia_source: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
     factions = []
     for export in faction_exports:
         catalogue = export["catalogue"]
         slug = slugify(catalogue["name"])
+        enhancement_count = sum(
+            len(detachment.get("enhancements", [])) for detachment in export.get("detachments", [])
+        )
         factions.append(
             {
                 "id": catalogue["id"],
@@ -1129,18 +1413,27 @@ def build_index_file(faction_exports: List[Dict[str, Any]], source_commit: str, 
                 "slug": slug,
                 "unitCount": len(export["units"]),
                 "detachmentCount": len(export.get("detachments", [])),
+                "enhancementCount": enhancement_count,
                 "stratagemCount": len(export.get("stratagems", [])),
                 "path": f"factions/{slug}.json",
             }
         )
     factions.sort(key=lambda item: item["name"])
+    source: Dict[str, Any] = {
+        "name": DATASET_NAME,
+        "repo": DATASET_REPO,
+        "commit": source_commit,
+        "sourceTimestamp": source_timestamp,
+    }
+    if wahapedia_source:
+        source["wahapedia"] = {
+            "name": wahapedia_source.get("name"),
+            "url": wahapedia_source.get("url"),
+            "attribution": wahapedia_source.get("attribution"),
+            "retrievedAt": wahapedia_source.get("retrievedAt"),
+        }
     return {
-        "source": {
-            "name": DATASET_NAME,
-            "repo": DATASET_REPO,
-            "commit": source_commit,
-            "sourceTimestamp": source_timestamp,
-        },
+        "source": source,
         "generatedAt": datetime.now(timezone.utc).isoformat(),
         "factions": factions,
     }
@@ -1162,17 +1455,36 @@ def main() -> None:
     source_commit = get_repo_commit(SOURCE_DIR)
     source_timestamp = get_repo_timestamp(SOURCE_DIR)
 
+    wahapedia = load_wahapedia()
+    if wahapedia is None:
+        print("note: no Wahapedia export found in .cache/wahapedia "
+              "(run `python scripts/fetch_wahapedia.py`); stratagems/enhancements will be empty")
+
     faction_exports: List[Dict[str, Any]] = []
     for document in sorted(index.catalogues.values(), key=lambda item: item.name):
         if document.library:
             continue
         export = export_catalogue(document, index)
+        if wahapedia is not None:
+            stats = attach_wahapedia(export, wahapedia)
+            extra = (
+                f", {stats['stratagems']} stratagems, {stats['enhancements']} enhancements"
+                + (f" (unmatched: {stats['unmatchedStratagems']} strat / "
+                   f"{stats['unmatchedEnhancements']} enh)"
+                   if stats["unmatchedStratagems"] or stats["unmatchedEnhancements"] else "")
+            )
+        else:
+            extra = ""
         faction_exports.append(export)
         file_name = slugify(document.name) + ".json"
         write_json(FACTIONS_DIR / file_name, export)
-        print(f"exported {document.name}: {len(export['units'])} units")
+        print(f"exported {document.name}: {len(export['units'])} units{extra}")
 
-    write_json(OUTPUT_DIR / "index.json", build_index_file(faction_exports, source_commit, source_timestamp))
+    wahapedia_source = wahapedia.get("source") if wahapedia else None
+    write_json(
+        OUTPUT_DIR / "index.json",
+        build_index_file(faction_exports, source_commit, source_timestamp, wahapedia_source),
+    )
     print(f"wrote {len(faction_exports)} faction files to {FACTIONS_DIR}")
 
 
