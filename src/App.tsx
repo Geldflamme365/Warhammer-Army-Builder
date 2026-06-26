@@ -14,7 +14,10 @@ import {
   Search,
   Shield,
   ScrollText,
+  Sparkles,
   Swords,
+  Link2,
+  Unlink,
   Trash2,
   X,
 } from "lucide-react";
@@ -24,6 +27,7 @@ import type {
   CatalogueIndex,
   Constraint,
   DetachmentRecord,
+  EnhancementRecord,
   FactionMeta,
   FactionData,
   Modifier,
@@ -55,6 +59,7 @@ const CATEGORY_ORDER = [
 ] as const;
 const EMPTY_DETACHMENTS: DetachmentRecord[] = [];
 const EMPTY_STRATAGEMS: StratagemRecord[] = [];
+const EMPTY_ENHANCEMENTS: EnhancementRecord[] = [];
 
 type Alliance = (typeof ALLIANCE_ORDER)[number];
 type AppView = "home" | "setup" | "builder";
@@ -349,19 +354,51 @@ function App() {
   }, [activeArmyId, deferredSearch, screen, selectedUnit, unitSections]);
 
   const currentDraft = activeArmy?.items ?? [];
-  const totalPoints = currentDraft.reduce((sum, item) => sum + item.points * item.count, 0);
+  const unitsById = useMemo(() => new Map(units.map((unit) => [unit.id, unit])), [units]);
+  const totalPoints = currentDraft.reduce((sum, item) => sum + rosterItemPoints(item), 0);
   const totalSelections = currentDraft.reduce((sum, item) => sum + item.count, 0);
-  const armySections = useMemo(() => {
-    const grouped = groupBy(currentDraft, (item) => item.primaryCategory ?? "Other");
-    return Object.entries(grouped)
-      .map(([title, items]) => ({
-        title,
-        items: items.slice().sort((left, right) => left.name.localeCompare(right.name)),
-        totalCount: items.reduce((sum, item) => sum + item.count, 0),
-        totalPoints: items.reduce((sum, item) => sum + item.points * item.count, 0),
-      }))
-      .sort((left, right) => compareCategoryTitle(left.title, right.title));
+
+  // Leaders attached to a Bodyguard unit that is also in the roster are nested
+  // under that host rather than listed on their own.
+  const attachedByHost = useMemo(() => {
+    const map: Record<string, RosterItem[]> = {};
+    for (const item of currentDraft) {
+      if (item.attachedTo && currentDraft.some((host) => host.unitId === item.attachedTo)) {
+        (map[item.attachedTo] ??= []).push(item);
+      }
+    }
+    return map;
   }, [currentDraft]);
+  const attachedIds = useMemo(
+    () => new Set(Object.values(attachedByHost).flat().map((item) => item.unitId)),
+    [attachedByHost],
+  );
+
+  const armySections = useMemo(() => {
+    const visible = currentDraft.filter((item) => !attachedIds.has(item.unitId));
+    const grouped = groupBy(visible, (item) => item.primaryCategory ?? "Other");
+    return Object.entries(grouped)
+      .map(([title, items]) => {
+        const sortedItems = items.slice().sort((left, right) => left.name.localeCompare(right.name));
+        const nestedLeaders = sortedItems.flatMap((item) => attachedByHost[item.unitId] ?? []);
+        const allItems = [...sortedItems, ...nestedLeaders];
+        return {
+          title,
+          items: sortedItems,
+          totalCount: allItems.reduce((sum, item) => sum + item.count, 0),
+          totalPoints: allItems.reduce((sum, item) => sum + rosterItemPoints(item), 0),
+        };
+      })
+      .sort((left, right) => compareCategoryTitle(left.title, right.title));
+  }, [currentDraft, attachedByHost, attachedIds]);
+
+  const detachmentEnhancements = activeDetachment?.enhancements ?? EMPTY_ENHANCEMENTS;
+  const usedEnhancementIds = useMemo(
+    () => new Set(currentDraft.map((item) => item.enhancementId).filter(Boolean) as string[]),
+    [currentDraft],
+  );
+  // 10e: an army may include at most three Enhancements.
+  const enhancementsRemaining = Math.max(0, 3 - usedEnhancementIds.size);
 
   useEffect(() => {
     if (screen !== "builder" || (datasheetUnitId && !units.some((unit) => unit.id === datasheetUnitId))) {
@@ -622,12 +659,51 @@ function App() {
     updateArmyItems((items) =>
       items
         .map((item) => (item.unitId === unitId ? { ...item, count: nextCount } : item))
-        .filter((item) => item.count > 0),
+        // Removing a unit also detaches any leader joined to it and clears
+        // its own attachment so no dangling links remain.
+        .filter((item) => item.count > 0)
+        .map((item) =>
+          nextCount <= 0 && item.attachedTo === unitId ? { ...item, attachedTo: undefined } : item,
+        ),
     );
   }
 
   function updateItemNote(unitId: string, note: string) {
     updateArmyItems((items) => items.map((item) => (item.unitId === unitId ? { ...item, note } : item)));
+  }
+
+  function assignEnhancement(unitId: string, enhancement: EnhancementRecord) {
+    const points = typeof enhancement.points === "number" ? enhancement.points : Number(enhancement.points) || 0;
+    updateArmyItems((items) =>
+      items.map((item) =>
+        item.unitId === unitId
+          ? {
+              ...item,
+              enhancementId: enhancement.id,
+              enhancementName: enhancement.name,
+              enhancementPoints: points,
+            }
+          : item,
+      ),
+    );
+  }
+
+  function clearEnhancement(unitId: string) {
+    updateArmyItems((items) =>
+      items.map((item) =>
+        item.unitId === unitId
+          ? { ...item, enhancementId: undefined, enhancementName: undefined, enhancementPoints: undefined }
+          : item,
+      ),
+    );
+  }
+
+  function attachLeader(leaderUnitId: string, hostUnitId: string) {
+    updateArmyItems((items) =>
+      items.map((item) =>
+        item.unitId === leaderUnitId ? { ...item, attachedTo: hostUnitId || undefined } : item,
+      ),
+    );
   }
 
   function clearArmyRoster() {
@@ -644,12 +720,20 @@ function App() {
       activeDetachment ? `Detachment: ${activeDetachment.name}` : "",
       `${totalPoints} pts | ${totalSelections} selections`,
     ].filter((line) => line !== "");
+    const nameById = new Map(currentDraft.map((item) => [item.unitId, item.name]));
     const lines = [
       ...headerLines,
       "",
       ...currentDraft.map((item) => {
         const note = item.note.trim() ? ` - ${item.note.trim()}` : "";
-        return `${item.count}x ${item.name} (${item.points} pts each)${note}`;
+        const enhancement = item.enhancementName
+          ? ` [Enhancement: ${item.enhancementName} +${item.enhancementPoints ?? 0} pts]`
+          : "";
+        const attached =
+          item.attachedTo && nameById.has(item.attachedTo)
+            ? ` [Leading: ${nameById.get(item.attachedTo)}]`
+            : "";
+        return `${item.count}x ${item.name} (${rosterItemPoints(item)} pts)${enhancement}${attached}${note}`;
       }),
     ];
     await navigator.clipboard.writeText(lines.join("\n"));
@@ -701,6 +785,15 @@ function App() {
             A first-pass web app wired straight into the prepared BSData faction exports. Pick a faction,
             inspect units, and assemble a local roster.
           </p>
+          {indexData?.source.wahapedia ? (
+            <p className="app-credit">
+              Stratagem & enhancement data powered by{" "}
+              <a href={indexData.source.wahapedia.url} target="_blank" rel="noreferrer noopener">
+                Wahapedia
+              </a>
+              . Warhammer 40,000 10th Edition.
+            </p>
+          ) : null}
         </div>
 
         <div className="header-status">
@@ -1207,61 +1300,25 @@ function App() {
 
                   <div className="army-group-items">
                     {section.items.map((item) => (
-                      <article key={item.unitId} className="roster-item">
-                        <div className="roster-item-top">
-                          <div>
-                            <h3>{item.name}</h3>
-                            <div className="roster-item-meta">
-                              <span>{item.count}x in list</span>
-                              <span>{item.points} pts each</span>
-                            </div>
-                          </div>
-                          <strong>{item.points * item.count} pts</strong>
-                        </div>
-
-                        <div className="count-row">
-                          <button
-                            className="secondary-button compact-button"
-                            type="button"
-                            onClick={() => focusArmyUnit(item.unitId)}
-                          >
-                            <Crosshair size={14} />
-                            Inspect
-                          </button>
-                          <button
-                            className="icon-button"
-                            type="button"
-                            title={`Decrease ${item.name}`}
-                            onClick={() => adjustItemCount(item.unitId, item.count - 1)}
-                          >
-                            <Minus size={16} />
-                          </button>
-                          <span>{item.count}</span>
-                          <button
-                            className="icon-button"
-                            type="button"
-                            title={`Increase ${item.name}`}
-                            onClick={() => adjustItemCount(item.unitId, item.count + 1)}
-                          >
-                            <Plus size={16} />
-                          </button>
-                          <button
-                            className="icon-button danger"
-                            type="button"
-                            title={`Remove ${item.name}`}
-                            onClick={() => adjustItemCount(item.unitId, 0)}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-
-                        <input
-                          className="note-field"
-                          value={item.note}
-                          onChange={(event) => updateItemNote(item.unitId, event.target.value)}
-                          placeholder="Optional note, wargear idea, role"
-                        />
-                      </article>
+                      <RosterItemCard
+                        key={item.unitId}
+                        item={item}
+                        unit={unitsById.get(item.unitId)}
+                        enhancements={detachmentEnhancements}
+                        usedEnhancementIds={usedEnhancementIds}
+                        enhancementsRemaining={enhancementsRemaining}
+                        leaderHosts={findLeaderHosts(item, currentDraft, unitsById)}
+                        attachedLeaders={(attachedByHost[item.unitId] ?? []).map((leader) => ({
+                          leader,
+                          unit: unitsById.get(leader.unitId),
+                        }))}
+                        onInspect={focusArmyUnit}
+                        onAdjust={adjustItemCount}
+                        onNote={updateItemNote}
+                        onAssignEnhancement={assignEnhancement}
+                        onClearEnhancement={clearEnhancement}
+                        onAttach={attachLeader}
+                      />
                     ))}
                   </div>
                 </section>
@@ -1568,6 +1625,226 @@ function TreeSection({ tree }: { tree: TreeNode }) {
   );
 }
 
+type RosterItemCardProps = {
+  item: RosterItem;
+  unit?: UnitRecord;
+  enhancements: EnhancementRecord[];
+  usedEnhancementIds: Set<string>;
+  enhancementsRemaining: number;
+  leaderHosts: RosterItem[];
+  attachedLeaders: { leader: RosterItem; unit?: UnitRecord }[];
+  nested?: boolean;
+  hostName?: string;
+  onInspect: (unitId: string) => void;
+  onAdjust: (unitId: string, nextCount: number) => void;
+  onNote: (unitId: string, note: string) => void;
+  onAssignEnhancement: (unitId: string, enhancement: EnhancementRecord) => void;
+  onClearEnhancement: (unitId: string) => void;
+  onAttach: (leaderUnitId: string, hostUnitId: string) => void;
+};
+
+function RosterItemCard({
+  item,
+  unit,
+  enhancements,
+  usedEnhancementIds,
+  enhancementsRemaining,
+  leaderHosts,
+  attachedLeaders,
+  nested = false,
+  hostName,
+  onInspect,
+  onAdjust,
+  onNote,
+  onAssignEnhancement,
+  onClearEnhancement,
+  onAttach,
+}: RosterItemCardProps) {
+  const isCharacter = unit?.isCharacter ?? false;
+  const isEpicHero = unit?.isEpicHero ?? false;
+  const isLeader = (unit?.leads?.length ?? 0) > 0;
+  const canHaveEnhancement = isCharacter && !isEpicHero && enhancements.length > 0;
+  const combinedPoints = rosterItemPoints(item);
+
+  return (
+    <article className={nested ? "roster-item roster-item-nested" : "roster-item"}>
+      <div className="roster-item-top">
+        <div>
+          <h3>{item.name}</h3>
+          <div className="roster-item-meta">
+            <span>{item.count}x in list</span>
+            <span>
+              {item.points} pts{item.enhancementPoints ? ` + ${item.enhancementPoints}` : ""} each
+            </span>
+            {nested && hostName ? (
+              <span className="roster-attached-tag">
+                <Link2 size={12} /> Leading {hostName}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <strong>{combinedPoints} pts</strong>
+      </div>
+
+      <div className="count-row">
+        <button className="secondary-button compact-button" type="button" onClick={() => onInspect(item.unitId)}>
+          <Crosshair size={14} />
+          Inspect
+        </button>
+        <button
+          className="icon-button"
+          type="button"
+          title={`Decrease ${item.name}`}
+          onClick={() => onAdjust(item.unitId, item.count - 1)}
+        >
+          <Minus size={16} />
+        </button>
+        <span>{item.count}</span>
+        <button
+          className="icon-button"
+          type="button"
+          title={`Increase ${item.name}`}
+          onClick={() => onAdjust(item.unitId, item.count + 1)}
+        >
+          <Plus size={16} />
+        </button>
+        <button
+          className="icon-button danger"
+          type="button"
+          title={`Remove ${item.name}`}
+          onClick={() => onAdjust(item.unitId, 0)}
+        >
+          <Trash2 size={16} />
+        </button>
+      </div>
+
+      {canHaveEnhancement ? (
+        <label className="roster-control">
+          <Sparkles size={14} />
+          <select
+            value={item.enhancementId ?? ""}
+            onChange={(event) => {
+              const id = event.target.value;
+              if (!id) {
+                onClearEnhancement(item.unitId);
+                return;
+              }
+              const enhancement = enhancements.find((entry) => entry.id === id);
+              if (enhancement) {
+                onAssignEnhancement(item.unitId, enhancement);
+              }
+            }}
+          >
+            <option value="">No enhancement</option>
+            {enhancements.map((enhancement) => {
+              const takenElsewhere =
+                usedEnhancementIds.has(enhancement.id) && item.enhancementId !== enhancement.id;
+              const blockedByCap = enhancementsRemaining <= 0 && item.enhancementId !== enhancement.id;
+              return (
+                <option key={enhancement.id} value={enhancement.id} disabled={takenElsewhere || blockedByCap}>
+                  {enhancement.name} (+{formatEnhancementPoints(enhancement.points)})
+                  {takenElsewhere ? " - taken" : ""}
+                </option>
+              );
+            })}
+          </select>
+        </label>
+      ) : null}
+
+      {isLeader && !nested ? (
+        <label className="roster-control">
+          <Link2 size={14} />
+          <select
+            value={item.attachedTo ?? ""}
+            onChange={(event) => onAttach(item.unitId, event.target.value)}
+            disabled={leaderHosts.length === 0}
+          >
+            <option value="">{leaderHosts.length === 0 ? "No Bodyguard in roster" : "Not attached"}</option>
+            {leaderHosts.map((host) => (
+              <option key={host.unitId} value={host.unitId}>
+                Attach to {host.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : null}
+
+      {nested ? (
+        <button
+          className="secondary-button compact-button detach-button"
+          type="button"
+          onClick={() => onAttach(item.unitId, "")}
+        >
+          <Unlink size={14} />
+          Detach
+        </button>
+      ) : null}
+
+      <input
+        className="note-field"
+        value={item.note}
+        onChange={(event) => onNote(item.unitId, event.target.value)}
+        placeholder="Optional note, wargear idea, role"
+      />
+
+      {attachedLeaders.length > 0 ? (
+        <div className="roster-attachments">
+          {attachedLeaders.map(({ leader, unit: leaderUnit }) => (
+            <RosterItemCard
+              key={leader.unitId}
+              item={leader}
+              unit={leaderUnit}
+              enhancements={enhancements}
+              usedEnhancementIds={usedEnhancementIds}
+              enhancementsRemaining={enhancementsRemaining}
+              leaderHosts={[]}
+              attachedLeaders={[]}
+              nested
+              hostName={item.name}
+              onInspect={onInspect}
+              onAdjust={onAdjust}
+              onNote={onNote}
+              onAssignEnhancement={onAssignEnhancement}
+              onClearEnhancement={onClearEnhancement}
+              onAttach={onAttach}
+            />
+          ))}
+        </div>
+      ) : null}
+    </article>
+  );
+}
+
+const STRATAGEM_PHASE_ORDER = [
+  "Any phase",
+  "Command phase",
+  "Movement phase",
+  "Shooting phase",
+  "Charge phase",
+  "Fight phase",
+];
+
+function stratagemPhaseRank(phase?: string): number {
+  if (!phase) {
+    return STRATAGEM_PHASE_ORDER.length + 1;
+  }
+  const index = STRATAGEM_PHASE_ORDER.findIndex((entry) => entry.toLowerCase() === phase.toLowerCase());
+  return index === -1 ? STRATAGEM_PHASE_ORDER.length : index;
+}
+
+function groupStratagemsByPhase(stratagems: StratagemRecord[]): { phase: string; items: StratagemRecord[] }[] {
+  const grouped = groupBy(stratagems, (stratagem) => stratagem.phase || "Other");
+  return Object.entries(grouped)
+    .map(([phase, items]) => ({
+      phase,
+      items: items.slice().sort((left, right) => left.name.localeCompare(right.name)),
+    }))
+    .sort((left, right) => {
+      const rank = stratagemPhaseRank(left.phase) - stratagemPhaseRank(right.phase);
+      return rank !== 0 ? rank : left.phase.localeCompare(right.phase);
+    });
+}
+
 function RulesPanel({
   detachment,
   stratagems,
@@ -1577,6 +1854,28 @@ function RulesPanel({
   stratagems: StratagemRecord[];
   totalStratagemCount: number;
 }) {
+  const [stratagemQuery, setStratagemQuery] = useState("");
+  const enhancements = detachment?.enhancements ?? [];
+
+  const filteredStratagems = useMemo(() => {
+    const query = stratagemQuery.trim().toLowerCase();
+    if (!query) {
+      return stratagems;
+    }
+    return stratagems.filter((stratagem) =>
+      [stratagem.name, stratagem.type, stratagem.phase, stratagem.detachmentName, stratagem.effect, stratagem.when]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase()
+        .includes(query),
+    );
+  }, [stratagemQuery, stratagems]);
+
+  const coreStratagems = filteredStratagems.filter((stratagem) => stratagem.core);
+  const detachmentStratagems = filteredStratagems.filter((stratagem) => !stratagem.core);
+  const coreGroups = groupStratagemsByPhase(coreStratagems);
+  const detachmentGroups = groupStratagemsByPhase(detachmentStratagems);
+
   return (
     <section className="rules-panel">
       <div className="section-head">
@@ -1616,58 +1915,133 @@ function RulesPanel({
         <MessageTone tone="neutral" message="No detachment data was found for this faction." />
       )}
 
+      <div className="section-head enhancement-section-head">
+        <Sparkles size={16} />
+        <h3>Enhancements</h3>
+        <span>{enhancements.length}</span>
+      </div>
+      {enhancements.length > 0 ? (
+        <div className="enhancement-list">
+          {enhancements.map((enhancement) => (
+            <article key={enhancement.id} className="enhancement-card">
+              <div className="enhancement-card-head">
+                <h4>{enhancement.name}</h4>
+                <span className="points-badge">{formatEnhancementPoints(enhancement.points)}</span>
+              </div>
+              {enhancement.description ? <p>{enhancement.description}</p> : null}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <MessageTone tone="neutral" message="No enhancements were found for this detachment." />
+      )}
+
       <div className="section-head stratagem-section-head">
         <ScrollText size={16} />
         <h3>Stratagems</h3>
-        <span>{stratagems.length}</span>
+        <span>{filteredStratagems.length}</span>
       </div>
 
+      {totalStratagemCount > 0 ? (
+        <label className="field stratagem-search">
+          <Search size={14} />
+          <input
+            value={stratagemQuery}
+            onChange={(event) => setStratagemQuery(event.target.value)}
+            placeholder="Filter stratagems by name, phase, type"
+          />
+        </label>
+      ) : null}
+
       <div className="stratagem-list">
-        {stratagems.map((stratagem) => (
-          <StratagemCard key={stratagem.id} stratagem={stratagem} />
-        ))}
-        {totalStratagemCount === 0 ? (
-          <MessageTone tone="neutral" message="No stratagem card data is present in the current BSData export." />
+        {detachmentGroups.length > 0 ? (
+          <div className="stratagem-pool">
+            <p className="stratagem-pool-label">Detachment</p>
+            {detachmentGroups.map((group) => (
+              <StratagemPhaseGroup key={`det-${group.phase}`} phase={group.phase} items={group.items} />
+            ))}
+          </div>
         ) : null}
-        {totalStratagemCount > 0 && stratagems.length === 0 ? (
-          <MessageTone tone="neutral" message="No stratagem records are linked to the selected detachment." />
+
+        {coreGroups.length > 0 ? (
+          <div className="stratagem-pool">
+            <p className="stratagem-pool-label">Core</p>
+            {coreGroups.map((group) => (
+              <StratagemPhaseGroup key={`core-${group.phase}`} phase={group.phase} items={group.items} />
+            ))}
+          </div>
+        ) : null}
+
+        {totalStratagemCount === 0 ? (
+          <MessageTone tone="neutral" message="No stratagem card data is present in the current export." />
+        ) : null}
+        {totalStratagemCount > 0 && filteredStratagems.length === 0 ? (
+          <MessageTone tone="neutral" message="No stratagems match the current filter or detachment." />
         ) : null}
       </div>
     </section>
   );
 }
 
+function StratagemPhaseGroup({ phase, items }: { phase: string; items: StratagemRecord[] }) {
+  return (
+    <div className="stratagem-phase-group">
+      <p className="stratagem-phase-label">{phase}</p>
+      {items.map((stratagem) => (
+        <StratagemCard key={stratagem.id} stratagem={stratagem} />
+      ))}
+    </div>
+  );
+}
+
 function StratagemCard({ stratagem }: { stratagem: StratagemRecord }) {
-  const details = [
-    ["CP", stratagem.cp],
-    ["Phase", stratagem.phase],
-    ["Type", stratagem.type],
+  const sections = [
     ["When", stratagem.when],
     ["Target", stratagem.target],
+    ["Effect", stratagem.effect],
     ["Restrictions", stratagem.restrictions],
-  ].filter(([, value]) => value);
-  const body = stratagem.effect ?? stratagem.description;
+  ].filter(([, value]) => value) as [string, string][];
+  const tags = [stratagem.type, stratagem.turn].filter(Boolean) as string[];
 
   return (
     <article className="stratagem-card">
       <div className="stratagem-card-head">
+        <span className="cp-badge" title="Command points">
+          {stratagem.cp ? `${stratagem.cp} CP` : "CP"}
+        </span>
         <h4>{stratagem.name}</h4>
-        {stratagem.detachmentName ? <span>{stratagem.detachmentName}</span> : null}
+        {stratagem.detachmentName ? <span className="stratagem-source">{stratagem.detachmentName}</span> : null}
       </div>
 
-      {details.length > 0 ? (
+      {tags.length > 0 ? (
         <div className="detail-tags">
-          {details.map(([label, value]) => (
-            <span key={label}>
-              {label}: {value}
-            </span>
+          {tags.map((tag) => (
+            <span key={tag}>{tag}</span>
           ))}
         </div>
       ) : null}
 
-      <p>{body ?? "No description on record."}</p>
+      {sections.length > 0 ? (
+        <dl className="stratagem-sections">
+          {sections.map(([label, value]) => (
+            <div key={label} className="stratagem-section">
+              <dt>{label}</dt>
+              <dd>{value}</dd>
+            </div>
+          ))}
+        </dl>
+      ) : (
+        <p>{stratagem.description ?? stratagem.legend ?? "No description on record."}</p>
+      )}
     </article>
   );
+}
+
+function formatEnhancementPoints(points: number | string | null | undefined): string {
+  if (points === null || points === undefined || points === "") {
+    return "pts n/a";
+  }
+  return `${points} pts`;
 }
 
 function OptionTree({ node, depth }: { node: TreeNode; depth: number }) {
@@ -1778,17 +2152,50 @@ function resolveArmyDetachment(army: StoredArmy, detachments: DetachmentRecord[]
   );
 }
 
+function rosterItemPoints(item: RosterItem): number {
+  return (item.points + (item.enhancementPoints ?? 0)) * item.count;
+}
+
+function normalizeUnitName(value: string): string {
+  return value.toLowerCase().replace(/\[[^\]]*\]/g, "").replace(/[^a-z0-9]/g, "");
+}
+
+/** Roster items a Leader item may be attached to, per its `leads` list. */
+function findLeaderHosts(
+  leaderItem: RosterItem,
+  draft: RosterItem[],
+  unitsById: Map<string, UnitRecord>,
+): RosterItem[] {
+  const leads = unitsById.get(leaderItem.unitId)?.leads ?? [];
+  if (leads.length === 0) {
+    return [];
+  }
+  const leadSet = new Set(leads.map(normalizeUnitName));
+  return draft.filter((candidate) => {
+    if (candidate.unitId === leaderItem.unitId || candidate.attachedTo) {
+      return false;
+    }
+    const unit = unitsById.get(candidate.unitId);
+    const names = [candidate.name, unit?.baseName].filter(Boolean) as string[];
+    return names.some((name) => leadSet.has(normalizeUnitName(name)));
+  });
+}
+
 function getDetachmentStratagems(
   stratagems: StratagemRecord[],
   detachment: DetachmentRecord | null,
 ): StratagemRecord[] {
-  if (!detachment) {
-    return stratagems.filter((stratagem) => !stratagem.detachmentId && !stratagem.detachmentName);
-  }
-  const detachmentName = detachment.name.toLowerCase();
+  const detachmentName = detachment?.name.toLowerCase();
   return stratagems.filter((stratagem) => {
+    // Universal Core stratagems and army-wide cards are always available.
+    if (stratagem.core) {
+      return true;
+    }
     if (!stratagem.detachmentId && !stratagem.detachmentName) {
       return true;
+    }
+    if (!detachment) {
+      return false;
     }
     return (
       stratagem.detachmentId === detachment.id ||

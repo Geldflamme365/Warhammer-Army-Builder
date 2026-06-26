@@ -25,8 +25,14 @@ What works now:
 - one-open-at-a-time category accordion for unit browsing
 - datasheet modal for unit inspection
 - grouped army view with points totals
+- detachment rules, enhancements, and stratagems panel
+- stratagem browser: Core vs detachment, grouped by phase, CP badges, search
+- enhancements assignable to characters in the roster (10e limits: max 3 per army,
+  one per character, no Epic Heroes), counted toward points
+- leaders attachable to a valid Bodyguard unit in the roster, shown nested with
+  combined points
 - local save state in `localStorage`
-- copy/export of the current army
+- copy/export of the current army (including enhancements and leader attachments)
 - delete saved armies
 
 What is still incomplete:
@@ -34,7 +40,7 @@ What is still incomplete:
 - options are mostly read-only display right now
 - points are based on exported summary values, not a full live rules engine
 - validation is not complete BattleScribe/New Recruit style validation
-- detachments, enhancements, wargear logic, and force org rules are not fully implemented
+- wargear logic and full force-org rules are not fully implemented
 
 ## Stack
 
@@ -45,17 +51,35 @@ What is still incomplete:
 
 ## Data Source
 
-The app uses prepared JSON exports generated from the community-maintained BSData Warhammer 40k repository.
+The app uses prepared JSON exports generated from two community-maintained 10th
+edition sources:
+
+- **BSData** (`wh40k-10e`) — units, datasheets, detachments, options.
+- **Wahapedia** (`wh40k10ed`) — stratagems and enhancements, which are not present
+  in the BSData catalogue.
+
+Files and scripts:
 
 - prepared faction index: [data/bsdata/index.json](data/bsdata/index.json)
 - prepared faction files: `data/bsdata/factions/*.json`
 - export notes: [data/bsdata/README.md](data/bsdata/README.md)
+- Wahapedia fetch script: [scripts/fetch_wahapedia.py](scripts/fetch_wahapedia.py)
 - generator script: [scripts/prepare_bsdata.py](scripts/prepare_bsdata.py)
+
+Regenerate the data with:
+
+```bash
+npm run fetch:wahapedia
+npm run prepare:bsdata
+```
 
 Important:
 
 - this is not an official Games Workshop API
-- the data is based on BSData and inherits its strengths and limitations
+- everything here is 10th edition only
+- the data is based on BSData and Wahapedia and inherits their strengths and limitations
+- stratagem and enhancement data are © Wahapedia (https://wahapedia.ru), used under
+  their non-commercial, attribution terms ("powered by Wahapedia")
 - the export keeps rich unit trees, profiles, rules, and option structures, but the app does not fully evaluate all of that logic yet
 
 ## App Flow
