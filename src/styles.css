@@ -1270,3 +1270,225 @@ select,
     padding: 10px;
   }
 }
+
+/* --- Stratagems, enhancements, leaders (10e) ------------------------------- */
+.stratagem-pool {
+  display: grid;
+  gap: 10px;
+}
+
+.stratagem-pool-label,
+.stratagem-phase-label {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.stratagem-pool-label {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+  color: var(--accent);
+}
+
+.stratagem-phase-group {
+  display: grid;
+  gap: 8px;
+}
+
+.stratagem-phase-label {
+  margin-top: 2px;
+}
+
+.stratagem-search {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.stratagem-search svg {
+  color: var(--muted);
+  flex: none;
+}
+
+.stratagem-search input {
+  border: none;
+  background: transparent;
+  width: 100%;
+  font: inherit;
+  color: var(--ink);
+}
+
+.stratagem-search input:focus {
+  outline: none;
+}
+
+.stratagem-card-head {
+  align-items: center;
+}
+
+.stratagem-card-head h4 {
+  flex: 1;
+}
+
+.cp-badge {
+  flex: none;
+  align-self: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.stratagem-card-head .stratagem-source {
+  flex: none;
+  color: var(--muted);
+  font-size: 0.72rem;
+  text-align: right;
+}
+
+.stratagem-sections {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.stratagem-section {
+  display: grid;
+  gap: 2px;
+}
+
+.stratagem-section dt {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.stratagem-section dd {
+  margin: 0;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+}
+
+.enhancement-section-head {
+  margin-top: 4px;
+}
+
+.enhancement-section-head span {
+  margin-left: auto;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+}
+
+.enhancement-list {
+  display: grid;
+  gap: 8px;
+}
+
+.enhancement-card {
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-alt);
+}
+
+.enhancement-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.enhancement-card-head h4 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.enhancement-card p {
+  margin: 0;
+  font-size: 0.84rem;
+  white-space: pre-wrap;
+}
+
+.points-badge {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.roster-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+}
+
+.roster-control svg {
+  color: var(--accent);
+  flex: none;
+}
+
+.roster-control select {
+  flex: 1;
+  padding: 6px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--surface);
+  font: inherit;
+  color: var(--ink);
+}
+
+.roster-attached-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--accent);
+}
+
+.roster-attachments {
+  display: grid;
+  gap: 8px;
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--accent-soft);
+}
+
+.roster-item-nested {
+  background: var(--surface-soft);
+}
+
+.detach-button {
+  justify-self: start;
+}
+
+.app-credit {
+  margin-top: 6px;
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.app-credit a {
+  color: var(--accent);
+}
