@@ -4,6 +4,12 @@ export type CatalogueIndex = {
     repo: string;
     commit: string;
     sourceTimestamp: string;
+    wahapedia?: {
+      name?: string;
+      url?: string;
+      attribution?: string;
+      retrievedAt?: string;
+    };
   };
   generatedAt: string;
   factions: FactionMeta[];
@@ -104,6 +110,19 @@ export type UnitRecord = {
   summary: Summary;
   tree: TreeNode;
   options: TreeNode[];
+  isCharacter?: boolean;
+  isEpicHero?: boolean;
+  /** Names of Bodyguard units this Leader can be attached to (10e Leader ability). */
+  leads?: string[];
+};
+
+export type EnhancementRecord = {
+  id: string;
+  name: string;
+  points: number | string | null;
+  detachmentId?: string;
+  detachmentName?: string | null;
+  description?: string;
 };
 
 export type DetachmentRecord = {
@@ -115,6 +134,7 @@ export type DetachmentRecord = {
   profiles: Profile[];
   constraints: Constraint[];
   modifiers: Modifier[];
+  enhancements?: EnhancementRecord[];
 };
 
 export type StratagemRecord = {
@@ -122,14 +142,18 @@ export type StratagemRecord = {
   name: string;
   detachmentId?: string;
   detachmentName?: string;
+  /** True for universal Core stratagems available to every army. */
+  core?: boolean;
   sourceDocument?: string;
   cp?: string;
   phase?: string;
+  turn?: string;
   type?: string;
   when?: string;
   target?: string;
   effect?: string;
   restrictions?: string;
+  legend?: string;
   description?: string;
 };
 
@@ -153,6 +177,12 @@ export type RosterItem = {
   primaryCategory?: string | null;
   categories: string[];
   note: string;
+  /** Enhancement assigned to this (character) item, if any. */
+  enhancementId?: string;
+  enhancementName?: string;
+  enhancementPoints?: number;
+  /** unitId of the Bodyguard roster item this Leader is attached to. */
+  attachedTo?: string;
 };
 
 export type StoredDraft = {
